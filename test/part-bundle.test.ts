@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Rpc, type Port } from '@quadrohub/pc-sdk';
 import { buildPart } from '../scripts/build-pc.mjs';
 
-// The built part (dist/pc/part.cjs: GramJS and pc-sdk inside) started the way the program starts an installed part — Node's IPC
+// The built part (dist/pc/part.cjs: teleproto and pc-sdk inside) started the way the program starts an installed part — Node's IPC
 // channel and the program's hello — with the test playing the program: Windows' sealing (a stand-in), and the program's
 // WebSockets (it records what the part asks to open and send; Telegram itself is never reached).
 
@@ -80,9 +80,9 @@ describe('the built part of «Telegram»', () => {
     expect(await rpc.call('status')).toMatchObject({ configured: true, apiId: 2040, signedIn: false });
   });
 
-  it('GramJS goes to Telegram only through the program’s WebSocket, to Telegram Web’s address', async () => {
+  it('teleproto goes to Telegram only through the program’s WebSocket, to Telegram Web’s address', async () => {
     await expect(rpc.call('sendCode', { phone: '+79990000000' }, 120_000)).rejects.toThrow();
-    expect(opened[0]).toEqual({ url: 'wss://venus.web.telegram.org/apiws', protocols: ['binary'] });
+    expect(opened[0]).toEqual({ url: 'wss://venus.web.telegram.org/apiws', protocols: 'binary' });
     for (const o of opened) expect(o.url).toMatch(/^wss:\/\/[a-z]+(-1)?\.web\.telegram\.org\/apiws$/);
     // MTProto's obfuscated transport starts with its 64-byte header.
     expect(frames[0]!.length).toBeGreaterThanOrEqual(64);

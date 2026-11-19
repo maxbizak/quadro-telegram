@@ -22,6 +22,8 @@ const STAND_IN = `(() => {
   let journal = [];
   window.__pcCalls = [];
   window.__emitRead = (entry) => { journal = [entry, ...journal]; emit('read', entry); };
+  // The phone «scans» the code: Telegram asks the cloud password.
+  window.__scanQr = () => emit('login', { step: 'password', hint: 'кот' });
   window.quadroDesktop = Object.assign(window.quadroDesktop || {}, { parts: {
     has: (appId) => Promise.resolve(appId === 'quadro.telegram'),
     onEvent: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
@@ -32,6 +34,8 @@ const STAND_IN = `(() => {
         case 'status': return Promise.resolve({ ...st, allowed: chats.filter((c) => c.allowed).length });
         case 'setKeys': if (!/^[0-9a-f]{32}$/.test(p.apiHash)) return Promise.reject(new Error('api_hash — 32 знака (цифры и буквы a–f) с my.telegram.org')); st.configured = true; st.apiId = Number(p.apiId); return Promise.resolve({ ok: true });
         case 'sendCode': return Promise.resolve({ step: 'code', viaApp: true });
+        case 'qrStart': window.__qrCalls = (window.__qrCalls || 0) + 1; return Promise.resolve({ step: 'qr', url: 'tg://login?token=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA', expiresMs: Date.now() + 30000 });
+        case 'qrCancel': return Promise.resolve({ ok: true });
         case 'signIn': return p.code === '12345' ? Promise.resolve({ step: 'password', hint: 'кот' }) : Promise.reject(new Error('Неверный код'));
         case 'password': if (p.password !== 'secret') return Promise.reject(new Error('Неверный облачный пароль')); st.signedIn = true; st.me = { name: 'Тест Владелец', username: 'owner' }; return Promise.resolve({ step: 'done' });
         case 'chats': return Promise.resolve(chats.map((c) => ({ ...c })));
@@ -109,6 +113,12 @@ module.exports = async (probe) => {
   await type('input[type="password"]', '0123456789abcdef0123456789abcdef');
   await click('Сохранить ключи');
   await has('Шаг 2. Вход в Telegram');
+  // By QR first (the default): the code, then the phone's scan asks the cloud password.
+  await untilFrame(`!!document.querySelector('svg.tg-qr path')`);
+  await has('Подключить устройство');
+  await shot(`${OUT}/tg-qr.png`);
+  // The other way is there too.
+  await click('По номеру телефона');
   await type('input[type="tel"]', '+79990000000');
   await click('Получить код');
   await has('Код пришёл в Telegram');
@@ -116,8 +126,9 @@ module.exports = async (probe) => {
   await click('Войти');
   await has('Неверный код');
   await shot(`${OUT}/tg-code.png`);
-  await type('input[autocomplete="one-time-code"]', '12345');
-  await click('Войти');
+  await click('По QR-коду');
+  await untilFrame(`!!document.querySelector('svg.tg-qr path')`);
+  await js('window.__scanQr()');
   await has('Подсказка: «кот»');
   await type('input[autocomplete="current-password"]', 'secret');
   await shot(`${OUT}/tg-password.png`);

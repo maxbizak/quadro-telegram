@@ -17,8 +17,9 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 function setup(world?: StubChat[], sealer: typeof fakeSealer | null = fakeSealer) {
   const stub = stubFactory(world);
   const store = new Store(dir, sealer);
-  const service = new TelegramService({ store, factory: stub.factory, now: () => NOW, offsetMin: 180 });
-  return { ...stub, store, service };
+  const logins: Array<{ step: string; url?: string; wrong?: boolean }> = [];
+  const service = new TelegramService({ store, factory: stub.factory, now: () => NOW, offsetMin: 180, onLogin: (s) => logins.push(s) });
+  return { ...stub, store, service, logins };
 }
 
 async function signedIn(world?: StubChat[]) {
@@ -58,6 +59,36 @@ describe('sign-in on the screen', () => {
     for (const plain of ['valid-session', '0123456789abcdef', '123456']) expect(disk).not.toContain(plain);
     // The phone is never written down whole.
     expect(state.calls.join(' ')).not.toMatch(/9991234567/);
+  });
+
+  it('by QR: the code on the screen, a new one every 30 s, the cloud password (a wrong one asked again), signed in', async () => {
+    const { service, state, logins, store } = setup();
+    await service.setKeys({ apiId: '123456', apiHash: '0123456789abcdef0123456789abcdef' });
+    const first = await service.qrStart();
+    expect(first).toMatchObject({ step: 'qr', url: 'tg://login?token=QR1' });
+    expect((await service.status()).step).toBe('qr');
+    state.newCode!();
+    expect(logins.at(-1)).toMatchObject({ step: 'qr', url: 'tg://login?token=QR2' });
+    state.scan!();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(logins.at(-1)).toEqual({ step: 'password', hint: 'кот' });
+    expect(await service.password({ password: 'wrong' })).toEqual({ step: 'password', hint: 'кот', wrong: true });
+    expect(await service.password({ password: 'secret' })).toEqual({ step: 'done' });
+    expect(logins.at(-1)).toEqual({ step: 'done' });
+    expect(await service.status()).toMatchObject({ signedIn: true, me: { name: 'Владелец' } });
+    expect(await store.secret()).toMatchObject({ session: 'valid-session' });
+  });
+
+  it('QR: leaving the screen stops it; nothing more arrives', async () => {
+    const { service, state, logins } = setup();
+    await service.setKeys({ apiId: '123456', apiHash: '0123456789abcdef0123456789abcdef' });
+    await service.qrStart();
+    const seen = logins.length;
+    service.qrCancel();
+    state.newCode!();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(logins).toHaveLength(seen);
+    expect(await service.status()).toMatchObject({ signedIn: false, step: null });
   });
 
   it('a new start reads the sealed session: signed in without a code', async () => {

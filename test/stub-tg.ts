@@ -64,6 +64,9 @@ export interface StubState {
   sessions: string[];
   authorized: boolean;
   loggedOut: boolean;
+  /** QR sign-in in the stand-in: the phone «scans» the code; Telegram gives a new code. */
+  scan?: () => void;
+  newCode?: () => void;
 }
 
 export function stubFactory(world: StubChat[] = stubWorld(), state: StubState = { calls: [], sessions: [], authorized: false, loggedOut: false }): { factory: TgFactory; state: StubState; world: StubChat[] } {
@@ -94,6 +97,22 @@ export function stubFactory(world: StubChat[] = stubWorld(), state: StubState = 
         if (phase !== 'password' || password !== 'secret') throw new Error('Неверный облачный пароль');
         state.authorized = true;
         return { step: 'done' };
+      },
+      qrLogin: async (q) => {
+        state.calls.push('qrLogin');
+        let n = 0;
+        const code = () => q.onQr(`tg://login?token=QR${++n}`, Date.now() + 30_000);
+        code();
+        state.newCode = code;
+        await new Promise<void>((resolve, reject) => {
+          state.scan = resolve;
+          q.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        });
+        // The account has a cloud password: asked until it is right.
+        for (let wrong = false; ; wrong = true) {
+          if ((await q.password({ hint: 'кот', wrong })) === 'secret') break;
+        }
+        state.authorized = true;
       },
       logOut: async () => {
         state.calls.push('logOut');

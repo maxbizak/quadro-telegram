@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hostSocketClass, webSocketUrl, type PartSocketLike } from '../pc/host-socket';
+import { hostWebSocket, telegramUrl, type PartSocketLike } from '../pc/host-websocket';
 import { linksOf } from '../pc/links';
 import { formatMessage, parseTime } from '../pc/service';
 import { msg } from './stub-tg';
@@ -17,31 +17,52 @@ function fakeSocket() {
   return { s, sent, push: (d: Uint8Array) => message.forEach((fn) => fn(d)), drop: () => close.forEach((fn) => fn(1006, '')) };
 }
 
-describe('GramJS’s socket over the program’s WebSocket', () => {
+describe('teleproto’s WebSocket over the program’s', () => {
   it('opens only Telegram Web’s addresses', () => {
-    expect(webSocketUrl('venus.web.telegram.org')).toBe('wss://venus.web.telegram.org/apiws');
-    expect(webSocketUrl('pluto-1.web.telegram.org', true)).toBe('wss://pluto-1.web.telegram.org/apiws_test');
-    for (const bad of ['149.154.167.50', 'evil.com', 'venus.web.telegram.org.evil.com', 'a.b.web.telegram.org']) expect(() => webSocketUrl(bad)).toThrow();
+    expect(telegramUrl('wss://venus.web.telegram.org:443/apiws')).toBe('wss://venus.web.telegram.org/apiws');
+    expect(telegramUrl('wss://pluto-1.web.telegram.org/apiws_test')).toBe('wss://pluto-1.web.telegram.org/apiws_test');
+    for (const bad of ['ws://venus.web.telegram.org/apiws', 'wss://149.154.167.50:443/apiws', 'wss://evil.com/apiws', 'wss://venus.web.telegram.org.evil.com/apiws', 'wss://venus.web.telegram.org:8443/apiws', 'wss://venus.web.telegram.org/other'])
+      expect(() => telegramUrl(bad)).toThrow();
   });
 
-  it('reads exactly across frames, writes bytes, ends on a drop', async () => {
+  it('frames sent before the socket opens wait for it; frames come as ArrayBuffer; a drop closes it', async () => {
     const f = fakeSocket();
-    let url = '';
-    const Socket = hostSocketClass(async (u) => ((url = u), f.s));
-    const sock = new Socket();
-    await sock.connect(443, 'venus.web.telegram.org');
-    expect(url).toBe('wss://venus.web.telegram.org/apiws');
-    sock.write(Buffer.from([1, 2, 3]));
-    expect(Buffer.from(f.sent[0]!)).toEqual(Buffer.from([1, 2, 3]));
-    const reading = sock.readExactly(5);
+    let opened = '';
+    let release!: () => void;
+    const ws = hostWebSocket(async (u) => {
+      opened = u;
+      await new Promise<void>((r) => (release = r));
+      return f.s;
+    }, 'wss://venus.web.telegram.org:443/apiws', 'binary');
+    const events: string[] = [];
+    const got: number[][] = [];
+    ws.onopen = (() => events.push('open')) as never;
+    ws.onmessage = ((e: { data: ArrayBuffer }) => got.push([...new Uint8Array(e.data)])) as never;
+    ws.onclose = (() => events.push('close')) as never;
+    ws.send(new Uint8Array([1, 2, 3]));
+    expect(f.sent).toHaveLength(0);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(opened).toBe('wss://venus.web.telegram.org/apiws');
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(events).toEqual(['open']);
+    expect([...f.sent[0]!]).toEqual([1, 2, 3]);
     f.push(new Uint8Array([10, 11]));
-    f.push(new Uint8Array([12, 13, 14, 15]));
-    expect([...(await reading)]).toEqual([10, 11, 12, 13, 14]);
-    expect([...(await sock.read(10))]).toEqual([15]);
-    const waiting = sock.read(1);
+    expect(got).toEqual([[10, 11]]);
     f.drop();
-    await expect(waiting).rejects.toThrow(/closed/);
-    expect(() => sock.write(Buffer.from([1]))).toThrow(/closed/);
+    expect(events).toEqual(['open', 'close']);
+    expect(() => ws.send(new Uint8Array([1]))).toThrow(/closed/);
+  });
+
+  it('a refused address never reaches the program', async () => {
+    let asked = false;
+    const ws = hostWebSocket(async () => ((asked = true), fakeSocket().s), 'wss://evil.com/apiws');
+    const events: string[] = [];
+    ws.onerror = (() => events.push('error')) as never;
+    ws.onclose = (() => events.push('close')) as never;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toBe(false);
+    expect(events).toEqual(['error', 'close']);
   });
 });
 

@@ -1,20 +1,22 @@
 import bigInt from 'big-integer';
-import { Api, TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions';
-import { ConnectionTCPObfuscated } from 'telegram/network';
-import { computeCheck } from 'telegram/Password';
-import { Logger, LogLevel } from 'telegram/extensions/Logger';
-import { hostSocketClass, type OpenSocket } from './host-socket';
+import { Api, Logger, TelegramClient, WebSocketTransport, password } from 'teleproto';
+import { LogLevel } from 'teleproto/extensions/Logger';
+import { StringSession } from 'teleproto/sessions';
+import { hostWebSocket, type OpenSocket, type WebSocketLike } from './host-websocket';
 import { linksOf } from './links';
 import type { AttachmentKind, ChatKind, Downloaded, LoginState, Me, PeerRef, ReadOptions, SearchOptions, TgApi, TgAttachment, TgChat, TgFactory, TgMessage } from './types';
 
-// The person's Telegram account through GramJS (MTProto, MIT): like Telegram Web, over WebSocket to *.web.telegram.org, opened by
-// the program. Only reading calls are used here: dialogs, history, search, files. Nothing sends, deletes, reads-out or reacts.
+// The person's Telegram account through teleproto (MTProto, MIT; the maintained fork of GramJS): like Telegram Web, over WebSocket
+// to *.web.telegram.org, opened by the program. Only reading calls are used here: dialogs, history, search, files — and signing in
+// (code or QR). Nothing sends, deletes, reads-out or reacts.
 
-/** Telegram Web's addresses for every data centre (files: the «-1» ones). */
-class WebClient extends TelegramClient {
-  override async getDC(dcId: number, downloadDC = false): Promise<{ id: number; ipAddress: string; port: number }> {
-    return super.getDC(dcId, downloadDC, true);
+/** teleproto's WebSocket route, through the program's sockets (teleproto picks Telegram Web's addresses itself). */
+class ProgramWebSocket extends WebSocketTransport {
+  constructor(private readonly open: OpenSocket) {
+    super();
+  }
+  override webSocket(url: string, protocols: string | string[]): WebSocketLike {
+    return hostWebSocket(this.open, url, protocols);
   }
 }
 
@@ -33,9 +35,6 @@ export function within<T>(p: Promise<T>, ms: number): Promise<T> {
     }),
   ]);
 }
-
-/** The first address of a new session: DC 2 (Europe) over the web address; Telegram moves the session to its own DC itself. */
-const FIRST_DC = { id: 2, host: 'venus.web.telegram.org' };
 
 export class TgError extends Error {
   constructor(
@@ -165,7 +164,7 @@ export function messageOf(m: Api.TypeMessage): TgMessage | null {
   const msg = m as Api.Message;
   const buttons: string[] = [];
   if (msg.replyMarkup instanceof Api.ReplyInlineMarkup)
-    for (const row of msg.replyMarkup.rows) for (const b of row.buttons) if (b instanceof Api.KeyboardButtonUrl) buttons.push(b.url);
+    for (const row of msg.replyMarkup.rows) for (const b of row.buttons) if (b.type instanceof Api.InlineButtonTypeUrl || b.type instanceof Api.InlineButtonTypeUrlAuth) buttons.push(b.type.url);
   const attachments = attachmentsOf(msg);
   const links = linksOf(msg.message ?? '', (msg.entities ?? []).map((e) => ({ kind: e.className, offset: e.offset, length: e.length, url: (e as { url?: string }).url })), [...buttons, ...attachments.flatMap((a) => (a.url ? [a.url] : []))]);
   const fwd = msg.fwdFrom;
@@ -180,20 +179,16 @@ export function messageOf(m: Api.TypeMessage): TgMessage | null {
   };
 }
 
-export interface GramOptions {
+export interface ClientOptions {
   apiId: number;
   apiHash: string;
   session: string;
   openSocket: OpenSocket;
 }
 
-export async function gramClient(o: GramOptions): Promise<TgApi> {
-  const session = new StringSession(o.session);
-  if (!o.session) session.setDC(FIRST_DC.id, FIRST_DC.host, 443);
-  const client = new WebClient(session, o.apiId, o.apiHash, {
-    connection: ConnectionTCPObfuscated,
-    networkSocket: hostSocketClass(o.openSocket) as never,
-    useWSS: true,
+export async function mtprotoClient(o: ClientOptions): Promise<TgApi> {
+  const client = new TelegramClient(new StringSession(o.session), o.apiId, o.apiHash, {
+    transport: new ProgramWebSocket(o.openSocket),
     connectionRetries: 3,
     requestRetries: 2,
     floodSleepThreshold: 15,
@@ -204,7 +199,7 @@ export async function gramClient(o: GramOptions): Promise<TgApi> {
     systemLangCode: 'ru',
     baseLogger: new Logger(LogLevel.NONE),
   });
-  // GramJS reports a failed connection by `false` (and would then wait for ever): no link — say so and stop its loops.
+  // A failed connection may come back as `false` (GramJS, and its calls then waited for ever): no link — say so, stop its loops.
   let ok = false;
   try {
     ok = (await within(client.connect(), CONNECT_MS)) !== false && !!client.connected;
@@ -263,13 +258,40 @@ export async function gramClient(o: GramOptions): Promise<TgApi> {
           throw e;
         }
       }),
-    checkPassword: (password) =>
+    checkPassword: (pass) =>
       guard(async () => {
         const pwd = await client.invoke(new Api.account.GetPassword());
-        await client.invoke(new Api.auth.CheckPassword({ password: await computeCheck(pwd, password) }));
+        await client.invoke(new Api.auth.CheckPassword({ password: await password.computeCheck(pwd, pass) }));
         login = null;
         return { step: 'done' };
       }),
+    qrLogin: async (q) => {
+      // Not under `guard`: it waits for the person as long as they need (each code lives about 30 s, a new one follows).
+      if (!alive) throw new TgError('Соединение с Telegram прервано — повторите', 'OFFLINE');
+      let wrong = false;
+      try {
+        await client.signInUserWithQrCode(
+          { apiId: o.apiId, apiHash: o.apiHash },
+          {
+            qrCode: async ({ token, expires }) => q.onQr(`tg://login?token=${Buffer.from(token).toString('base64url')}`, expires * 1000),
+            password: async (hint) => {
+              const p = await q.password({ ...(hint ? { hint } : {}), wrong });
+              wrong = true;
+              return p;
+            },
+            onError: async (e) => {
+              // A wrong password: asked again (the screen says it was wrong). Anything else: stop.
+              if (/PASSWORD_HASH_INVALID/.test(String((e as { errorMessage?: string }).errorMessage ?? e.message))) return false;
+              return true;
+            },
+            abortSignal: q.signal,
+          },
+        );
+        login = null;
+      } catch (e) {
+        throw tgError(e);
+      }
+    },
     logOut: () =>
       guard(async () => {
         await client.invoke(new Api.auth.LogOut());
@@ -349,7 +371,7 @@ export async function gramClient(o: GramOptions): Promise<TgApi> {
   return api;
 }
 
-export const gramFactory =
+export const mtprotoFactory =
   (openSocket: OpenSocket): TgFactory =>
   (o) =>
-    gramClient({ ...o, openSocket });
+    mtprotoClient({ ...o, openSocket });

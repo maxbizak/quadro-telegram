@@ -71,5 +71,7 @@ export function usePcEvents(fn: (name: string, data: unknown) => void): void {
 export function errorText(e: unknown): string {
   const err = e as { code?: string; message?: string } | null;
   if (err?.code === 'NOT_IN_PROGRAM') return 'Это действие работает только в программе Quadro Hub на ПК';
-  return err?.message || 'Что-то пошло не так';
+  // The program's IPC wraps the part's words: «Error invoking remote method 'pcpart:call': RpcError: <words>».
+  const words = (err?.message ?? '').replace(/^Error invoking remote method '[^']*':\s*/, '').replace(/^(?:[A-Z]\w*Error|Error):\s*/, '');
+  return words || 'Что-то пошло не так';
 }

@@ -78,11 +78,18 @@ export interface Downloaded {
 }
 
 export interface LoginState {
-  step: 'code' | 'password' | 'done';
+  step: 'code' | 'qr' | 'password' | 'done' | 'error';
   /** The code went to the Telegram app (not SMS). */
   viaApp?: boolean;
   /** The 2FA password's hint, if the person set one. */
   hint?: string;
+  /** The last password was wrong (asked again). */
+  wrong?: boolean;
+  /** QR sign-in: the code to show (tg://login?token=…) and until when it lives (ms). */
+  url?: string;
+  expiresMs?: number;
+  /** step «error»: why the QR sign-in stopped. */
+  message?: string;
 }
 
 export interface Me {
@@ -101,6 +108,12 @@ export interface TgApi {
   sendCode(phone: string): Promise<LoginState>;
   signIn(code: string): Promise<LoginState>;
   checkPassword(password: string): Promise<LoginState>;
+  /**
+   * Sign-in by a QR code (Telegram on the phone → Settings → Devices → «Подключить устройство»): `onQr` gets each new code
+   * (tg://login?token=…, a fresh one about every 30 s) until it is scanned; `password` — the cloud password, when the account has
+   * one (called again after a wrong one). Resolves when signed in; `signal` stops it.
+   */
+  qrLogin(o: { onQr(url: string, expiresMs: number): void; password(o: { hint?: string; wrong: boolean }): Promise<string>; signal: AbortSignal }): Promise<void>;
   /** Ends this session on Telegram's side too (it disappears from «Устройства»). */
   logOut(): Promise<void>;
   /** The session to keep (sealed on the PC). */

@@ -288,3 +288,37 @@
     transition: none;
   }
 }
+
+.tg-methods {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tg-qr-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+}
+
+.tg-qr-box .tg-howto {
+  flex: 1;
+  min-width: 220px;
+}
+
+/* The QR code itself is a picture for a camera: black on white in every theme, with its own quiet zone. */
+.tg-qr {
+  width: 220px;
+  height: 220px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+}
+
+.tg-qr-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--color-border-strong);
+  color: var(--color-muted-foreground);
+}

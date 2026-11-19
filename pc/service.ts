@@ -108,6 +108,18 @@ export interface ServiceDeps {
   offsetMin?: number;
   /** A new line of «Что читал ИИ» (the open screen shows it at once). */
   onRead?: (entry: JournalEntry) => void;
+  /** The QR sign-in moved on: a new code, the password asked, done or stopped (the open screen follows it). */
+  onLogin?: (state: LoginState) => void;
+}
+
+/** A QR sign-in under way. */
+interface QrFlow {
+  abort: AbortController;
+  state: LoginState;
+  /** The cloud password Telegram asks for, waiting for the screen. */
+  password: ((p: string) => void) | null;
+  /** Who waits for the next state (the screen's call). */
+  waiters: Array<(s: LoginState) => void>;
 }
 
 export class TelegramService {
@@ -116,6 +128,7 @@ export class TelegramService {
   private loginStep: LoginState['step'] | null = null;
   private dialogs: { at: number; list: TgChat[] } | null = null;
   private me: Me | null = null;
+  private qr: QrFlow | null = null;
 
   constructor(private readonly d: ServiceDeps) {}
 
@@ -154,6 +167,8 @@ export class TelegramService {
   }
 
   async stop(): Promise<void> {
+    this.qr?.abort.abort();
+    this.qr = null;
     const c = this.client;
     this.client = null;
     await c?.close();
@@ -226,8 +241,86 @@ export class TelegramService {
   async password(x: unknown): Promise<LoginState> {
     const password = String(obj(x).password ?? '');
     if (!password) throw new UserError('Введите облачный пароль Telegram');
+    const flow = this.qr;
+    if (flow?.password) {
+      const give = flow.password;
+      flow.password = null;
+      const next = this.nextQrState(flow);
+      give(password);
+      const r = await next;
+      if (r.step === 'error') throw new UserError(r.message ?? 'Вход не удался');
+      return r;
+    }
     const c = await this.connect();
     return this.finishLogin(await c.checkPassword(password), c);
+  }
+
+  // ——— Sign-in by QR ———
+
+  private nextQrState(flow: QrFlow, ms = 120_000): Promise<LoginState> {
+    return new Promise((resolve) => {
+      const t = setTimeout(() => resolve(flow.state), ms);
+      t.unref?.();
+      flow.waiters.push((s) => {
+        clearTimeout(t);
+        resolve(s);
+      });
+    });
+  }
+
+  private qrState(flow: QrFlow, state: LoginState): void {
+    if (this.qr !== flow) return;
+    flow.state = state;
+    this.loginStep = state.step === 'error' ? null : state.step;
+    for (const w of flow.waiters.splice(0)) w(state);
+    this.d.onLogin?.(state);
+  }
+
+  /** Starts the QR sign-in: the first code comes back; new ones (and the rest) come as `onLogin`. */
+  async qrStart(): Promise<LoginState> {
+    if (this.qr) {
+      this.qr.abort.abort();
+      this.qr = null;
+    }
+    const c = await this.connect();
+    if (await c.authorized()) return { step: 'done' };
+    const flow: QrFlow = { abort: new AbortController(), state: { step: 'qr' }, password: null, waiters: [] };
+    this.qr = flow;
+    const first = this.nextQrState(flow, 30_000);
+    c.qrLogin({
+      onQr: (url, expiresMs) => this.qrState(flow, { step: 'qr', url, expiresMs }),
+      password: (o) =>
+        new Promise<string>((resolve) => {
+          flow.password = resolve;
+          this.qrState(flow, { step: 'password', ...(o.hint ? { hint: o.hint } : {}), ...(o.wrong ? { wrong: true } : {}) });
+        }),
+      signal: flow.abort.signal,
+    }).then(
+      async () => {
+        if (this.qr !== flow) return;
+        this.me = await c.me();
+        await this.keepSession(c);
+        this.qrState(flow, { step: 'done' });
+        this.qr = null;
+      },
+      (e: Error) => {
+        if (flow.abort.signal.aborted) return;
+        this.qrState(flow, { step: 'error', message: e.message });
+        this.qr = null;
+      },
+    );
+    const r = await first;
+    if (r.step === 'error') throw new UserError(r.message ?? 'Вход по QR не удался');
+    if (r.step === 'qr' && !r.url) throw new UserError('Telegram не прислал QR-код — попробуйте ещё раз', 'TIMEOUT');
+    return r;
+  }
+
+  /** Stops the QR sign-in (the screen left it). */
+  qrCancel(): { ok: true } {
+    this.qr?.abort.abort();
+    this.qr = null;
+    this.loginStep = null;
+    return { ok: true };
   }
 
   /** «Выйти из Telegram»: ends the session on Telegram's side and removes it from the PC; `keys` — the api keys and lists too. */

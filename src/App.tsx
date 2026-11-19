@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bot, Check, ExternalLink, History, KeyRound, LogOut, Megaphone, MessageCircle, RefreshCw, Search, ShieldCheck, User, Users } from 'lucide-react';
+import qrcode from 'qrcode-generator';
 import { errorText, quadro, usePcEvents, useQuadro } from './quadro';
 
 // «Telegram»'s screen in Hub's sandbox. Everything goes to its own part on this PC (quadro.pc.call): the keys of my.telegram.org,
@@ -10,7 +11,7 @@ type Kind = 'user' | 'bot' | 'group' | 'channel';
 type Status = { canSeal: boolean; configured: boolean; apiId: number | null; signedIn: boolean; me: { name: string; username?: string } | null; step: 'code' | 'password' | 'done' | null; allowed: number };
 type Chat = { id: string; kind: Kind; title: string; username?: string; unread?: number; lastAt?: string; allowed: boolean };
 type Read = { at: string; tool: string; chats: string[]; messages: number; files: number; bytes: number; query?: string; error?: string };
-type Login = { step: 'code' | 'password' | 'done'; viaApp?: boolean; hint?: string };
+type Login = { step: 'code' | 'qr' | 'password' | 'done' | 'error'; viaApp?: boolean; hint?: string; wrong?: boolean; url?: string; expiresMs?: number; message?: string };
 type Tab = 'access' | 'journal' | 'account';
 
 const pc = <T,>(method: string, params?: unknown) => quadro.pc.call<T>(method, params);
@@ -182,37 +183,121 @@ function KeysStep({ hadKeys, onDone, onCancel }: { hadKeys: boolean; onDone: () 
   );
 }
 
+/** A QR code as SVG — black on white whatever the theme (it is a picture for the phone's camera, not part of the page's look). */
+function QrCode({ text, size = 220 }: { text: string; size?: number }) {
+  const { n, path } = useMemo(() => {
+    const qr = qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    const count = qr.getModuleCount();
+    let d = '';
+    for (let r = 0; r < count; r++) for (let c = 0; c < count; c++) if (qr.isDark(r, c)) d += `M${c + 4},${r + 4}h1v1h-1z`;
+    return { n: count + 8, path: d };
+  }, [text]);
+  return (
+    <svg className="tg-qr" role="img" aria-label="QR-код для входа в Telegram" width={size} height={size} viewBox={`0 0 ${n} ${n}`} shapeRendering="crispEdges">
+      <rect width={n} height={n} fill="#fff" />
+      <path d={path} fill="#000" />
+    </svg>
+  );
+}
+
+type Method = 'qr' | 'phone';
+
 function LoginStep({ onDone, onChangeKeys }: { onDone: () => void; onChangeKeys: () => void }) {
-  const [step, setStep] = useState<'phone' | 'code' | 'password'>('phone');
+  const [method, setMethod] = useState<Method>('qr');
+  const [step, setStep] = useState<'start' | 'qr' | 'code' | 'password'>('start');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [info, setInfo] = useState<Login | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const run = async (fn: () => Promise<Login>) => {
-    setBusy(true);
-    setError('');
-    try {
-      const r = await fn();
+  const apply = useCallback(
+    (r: Login) => {
       setInfo(r);
       if (r.step === 'done') {
         setPassword('');
         onDone();
+      } else if (r.step === 'error') {
+        setError(r.message ?? 'Вход не удался');
+        setStep('start');
       } else setStep(r.step);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
+    },
+    [onDone],
+  );
+  const run = useCallback(
+    async (fn: () => Promise<Login>) => {
+      setBusy(true);
+      setError('');
+      try {
+        apply(await fn());
+      } catch (e) {
+        setError(errorText(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [apply],
+  );
+  // QR: new codes, the password and the end come from the part by themselves.
+  const onLogin = useCallback(
+    (name: string, data: unknown) => {
+      if (name === 'login') apply(data as Login);
+    },
+    [apply],
+  );
+  usePcEvents(onLogin);
+  const startQr = useCallback(() => void run(() => pc<Login>('qrStart')), [run]);
+  useEffect(() => {
+    if (method !== 'qr') return;
+    startQr();
+    // Leaving the QR (another way, or the screen closed): the part stops waiting for the phone.
+    return () => void pc('qrCancel').catch(() => undefined);
+  }, [method, startQr]);
+  const switchTo = (m: Method) => {
+    setError('');
+    setInfo(null);
+    setStep('start');
+    setMethod(m);
   };
+
   return (
     <section className="q-card q-stack">
       <div className="tg-step">
         <MessageCircle size={20} className="tg-accent" />
         <h2>Шаг 2. Вход в Telegram</h2>
       </div>
-      {step === 'phone' && (
+      {step !== 'password' && (
+        <div className="tg-methods" role="tablist" aria-label="Как войти">
+          <button type="button" role="tab" aria-selected={method === 'qr'} className="tg-tab" onClick={() => switchTo('qr')}>
+            По QR-коду
+          </button>
+          <button type="button" role="tab" aria-selected={method === 'phone'} className="tg-tab" onClick={() => switchTo('phone')}>
+            По номеру телефона
+          </button>
+        </div>
+      )}
+      {method === 'qr' && step !== 'password' && (
+        <div className="tg-qr-box">
+          {info?.step === 'qr' && info.url ? <QrCode text={info.url} /> : <div className="tg-qr tg-qr-empty">{busy ? 'Готовлю код…' : 'Нет кода'}</div>}
+          <ol className="tg-howto">
+            <li>Откройте Telegram на телефоне.</li>
+            <li>
+              <b>Настройки → Устройства → Подключить устройство</b>.
+            </li>
+            <li>Наведите камеру на этот код. Код обновляется сам примерно раз в 30 секунд.</li>
+          </ol>
+          {step === 'start' && !busy && (
+            <div>
+              <button type="button" className="q-btn" onClick={startQr}>
+                Показать новый код
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {method === 'phone' && step !== 'code' && step !== 'password' && (
         <form
           className="q-stack"
           onSubmit={(e) => {
@@ -231,7 +316,7 @@ function LoginStep({ onDone, onChangeKeys }: { onDone: () => void; onChangeKeys:
           </div>
         </form>
       )}
-      {step === 'code' && (
+      {method === 'phone' && step === 'code' && (
         <form
           className="q-stack"
           onSubmit={(e) => {
@@ -248,7 +333,7 @@ function LoginStep({ onDone, onChangeKeys }: { onDone: () => void; onChangeKeys:
             <button type="submit" className="q-btn q-btn-primary" disabled={busy || !code.trim()}>
               Войти
             </button>
-            <button type="button" className="q-btn" onClick={() => setStep('phone')}>
+            <button type="button" className="q-btn" onClick={() => setStep('start')}>
               Другой номер
             </button>
           </div>
@@ -262,7 +347,9 @@ function LoginStep({ onDone, onChangeKeys }: { onDone: () => void; onChangeKeys:
             void run(() => pc<Login>('password', { password }));
           }}
         >
-          <p className="q-muted">У аккаунта включён облачный пароль (двухэтапная проверка).{info?.hint ? ` Подсказка: «${info.hint}».` : ''}</p>
+          <p className="q-muted">
+            {info?.wrong ? 'Пароль не подошёл — попробуйте ещё раз. ' : ''}У аккаунта включён облачный пароль (двухэтапная проверка).{info?.hint ? ` Подсказка: «${info.hint}».` : ''}
+          </p>
           <label className="q-label">
             Облачный пароль
             <input className="q-input tg-narrow" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
@@ -280,7 +367,7 @@ function LoginStep({ onDone, onChangeKeys }: { onDone: () => void; onChangeKeys:
         </p>
       )}
       <p className="q-subtle">
-        <ShieldCheck size={12} /> Номер, код и пароль вводите только здесь: они идут прямо в Telegram с этого ПК. ИИ их не видит и войти сам не может. Вход появится в Telegram в «Настройки → Устройства» как «Quadro Hub».
+        <ShieldCheck size={12} /> Код, номер и пароль идут прямо в Telegram с этого ПК. ИИ их не видит и войти сам не может. Вход появится в Telegram в «Настройки → Устройства» как «Quadro Hub».
       </p>
       <div>
         <button type="button" className="tg-link" onClick={onChangeKeys}>

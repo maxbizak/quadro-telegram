@@ -1,5 +1,6 @@
+import './env';
 import { connect, type PartHostApi } from '@quadrohub/pc-sdk';
-import { gramFactory } from './gram';
+import { mtprotoFactory } from './mtproto';
 import { TelegramService } from './service';
 import { Store } from './store';
 import type { TgFactory } from './types';
@@ -8,7 +9,7 @@ import type { TgFactory } from './types';
 // chooses chats (host.rpc.handle — only its screen calls these); the AI reads through Hub's MCP (host.mcp.handle — only the AI
 // calls these, and they never sign in, never see the phone, code or password, and read only the allowed chats).
 
-export const SCREEN_METHODS = ['status', 'setKeys', 'sendCode', 'signIn', 'password', 'logout', 'chats', 'setAccess', 'access', 'journal', 'clearJournal'] as const;
+export const SCREEN_METHODS = ['status', 'setKeys', 'sendCode', 'signIn', 'password', 'qrStart', 'qrCancel', 'logout', 'chats', 'setAccess', 'access', 'journal', 'clearJournal'] as const;
 /** The AI's tools: manifest `mcp.tools[].handler` = `pc:<name>`. */
 export const AI_TOOLS = ['chats', 'messages', 'search', 'file'] as const;
 
@@ -21,10 +22,11 @@ export function serveTelegram(host: Host, factory?: TgFactory, sealer: Host['sec
   const service = new TelegramService({
     store,
     onRead: (entry) => host.events.emit('read', entry),
+    onLogin: (state) => host.events.emit('login', state),
     factory:
       factory ??
       (open
-        ? gramFactory((url, protocols) => open(url, protocols))
+        ? mtprotoFactory((url, protocols) => open(url, protocols))
         : async () => {
             throw new Error('Программа Quadro Hub не умеет открывать соединение для Telegram: обновите программу');
           }),
@@ -35,6 +37,8 @@ export function serveTelegram(host: Host, factory?: TgFactory, sealer: Host['sec
   host.rpc.handle('sendCode', (x) => service.sendCode(obj(x)));
   host.rpc.handle('signIn', (x) => service.signIn(obj(x)));
   host.rpc.handle('password', (x) => service.password(obj(x)));
+  host.rpc.handle('qrStart', () => service.qrStart());
+  host.rpc.handle('qrCancel', () => service.qrCancel());
   host.rpc.handle('logout', (x) => service.logout(obj(x)));
   host.rpc.handle('chats', (x) => service.chats(obj(x)));
   host.rpc.handle('setAccess', (x) => service.setAccess(obj(x)));
