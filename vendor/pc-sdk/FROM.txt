@@ -1,1 +1,0 @@
-pc-sdk из ветки claude/pc-relay (0da610e) — до слияния в main

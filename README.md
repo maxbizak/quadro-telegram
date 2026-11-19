@@ -25,17 +25,21 @@
 
 ```bash
 npm install
-npm run build:no-mcp   # пакет без mcp и pc.mcp — пока схема манифеста Hub их не принимает (claude/v2-package-mcp)
-npm run build          # полный пакет, когда примет
+npm run build          # пакет целиком (с инструментами ИИ)
+npm run build:no-mcp   # без mcp и pc.mcp — для Hub старше 20.11.2026
 npm test               # сервис на заглушке Telegram, собранная часть (IPC, сокеты программы), сокет, ссылки, даты
 npm run typecheck
 ```
 
 Экран без публикации — своя копия Hub (`HUB_DEV_PACKAGES="<эта папка>" node scripts/dev.mjs --addr apps.localhost …`) и
-скрытый зонд Hub: `test/probe-telegram.cjs` (заглушка части, настоящий Telegram не трогается).
+скрытый зонд Hub (`apps/desktop/scripts/probe.cjs`), настоящий Telegram не трогается:
+- `test/probe-telegram.cjs` — экран целиком на заглушке части;
+- `test/probe-relay.cjs` — путь ИИ целиком: режим автора (часть из `dist/`), «ИИ может пользоваться», ключ с пакетом,
+  MCP `tools/list` и `tools/call telegram_*` через Hub и мост до части на ПК (`--bridges --apps`, `QUADRO_DEV_PACKAGES`,
+  `QUADRO_PROBE_RELAY=1`).
 
-`vendor/pc-sdk` — pc-sdk из ветки `claude/pc-relay` (сокеты, секреты, инструменты ИИ). Когда она будет в main, верните
-`"@quadrohub/pc-sdk": "file:../../QuadroHub/packages/pc-sdk"` и удалите `vendor/`.
+pc-sdk — архив Hub `pkg-sdk/v1/pc-sdk-0.1.0.tgz` (по документации автора — `npm i -D https://<Hub>/pkg-sdk/v1/pc-sdk-0.1.0.tgz`).
+20.11 рабочий Hub ещё отдавал старый архив, поэтому взят тот же файл из main: `file:../../QuadroHub/apps/web/public/…`.
 
 ## Упаковать и подписать
 
