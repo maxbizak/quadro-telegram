@@ -38,8 +38,7 @@ npm run typecheck
   MCP `tools/list` и `tools/call telegram_*` через Hub и мост до части на ПК (`--bridges --apps`, `QUADRO_DEV_PACKAGES`,
   `QUADRO_PROBE_RELAY=1`).
 
-pc-sdk — архив Hub `pkg-sdk/v1/pc-sdk-0.1.0.tgz` (по документации автора — `npm i -D https://<Hub>/pkg-sdk/v1/pc-sdk-0.1.0.tgz`).
-20.11 рабочий Hub ещё отдавал старый архив, поэтому взят тот же файл из main: `file:../../QuadroHub/apps/web/public/…`.
+pc-sdk — как в документации автора: `npm i -D https://quadro-metaverse.site/pkg-sdk/v1/pc-sdk-0.1.0.tgz`.
 
 ## Упаковать и подписать
 
