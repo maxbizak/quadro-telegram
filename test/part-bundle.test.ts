@@ -69,7 +69,7 @@ afterAll(async () => {
 
 describe('the built part of «Telegram»', () => {
   it('starts with nothing: no keys, no session, sealing available', async () => {
-    expect(await rpc.call('status')).toEqual({ canSeal: true, configured: false, apiId: null, signedIn: false, me: null, step: null, allowed: 0 });
+    expect(await rpc.call('status')).toEqual({ canSeal: true, configured: false, keys: null, publisherKeys: false, apiId: null, signedIn: false, me: null, step: null, allowed: 0 });
   });
 
   it('keeps the keys sealed by the program', async () => {

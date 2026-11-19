@@ -17,6 +17,8 @@ export interface Secret {
   apiId: number;
   apiHash: string;
   session: string;
+  /** Whose keys made this session: the person's own (my.telegram.org) or the publisher's («ключи Quadro»). */
+  source: 'own' | 'publisher';
 }
 
 export interface AllowedChat {
@@ -81,7 +83,9 @@ export class Store {
     try {
       const raw = Buffer.from(await this.sealer.unseal(new Uint8Array(readFileSync(this.path('secret.bin'))))).toString('utf8');
       const s = JSON.parse(raw) as Partial<Secret>;
-      return typeof s.apiId === 'number' && typeof s.apiHash === 'string' ? { apiId: s.apiId, apiHash: s.apiHash, session: typeof s.session === 'string' ? s.session : '' } : null;
+      return typeof s.apiId === 'number' && typeof s.apiHash === 'string'
+        ? { apiId: s.apiId, apiHash: s.apiHash, session: typeof s.session === 'string' ? s.session : '', source: s.source === 'publisher' ? 'publisher' : 'own' }
+        : null;
     } catch {
       // Sealed by another Windows user or a damaged file: as if nothing was kept.
       return null;

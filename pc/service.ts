@@ -100,9 +100,17 @@ export function formatMessage(m: TgMessage, offsetMin?: number): string {
   return lines.join('\n');
 }
 
+/** api_id and api_hash of a Telegram application. */
+export interface ApiKeys {
+  apiId: number;
+  apiHash: string;
+}
+
 export interface ServiceDeps {
   store: Store;
   factory: TgFactory;
+  /** The publisher's keys («ключи Quadro»), when the platform gives them to the part; null — only the person's own. */
+  publisherKeys?: () => ApiKeys | null;
   now?: () => number;
   /** The PC's time zone offset in minutes (tests fix it). */
   offsetMin?: number;
@@ -143,7 +151,7 @@ export class TelegramService {
     if (this.client) return this.client;
     if (this.connecting) return this.connecting;
     this.connecting = (async () => {
-      const s = await this.d.store.secret();
+      const s = await this.keys();
       if (!s) throw new UserError('Сначала укажите api_id и api_hash на экране приложения Telegram', 'NOT_CONFIGURED');
       const c = await this.d.factory({ apiId: s.apiId, apiHash: s.apiHash, session: s.session });
       this.client = c;
@@ -159,6 +167,20 @@ export class TelegramService {
     const c = await this.connect();
     if (!(await c.authorized())) throw new UserError('Telegram не подключён: владелец входит в аккаунт на экране приложения Telegram', 'NOT_SIGNED_IN');
     return c;
+  }
+
+  /**
+   * The keys of the session: the person's own if they set them; otherwise the publisher's — taken anew until a session is made
+   * with them (a later change of the publisher's keys never breaks a signed-in session: it keeps the keys it was made with).
+   */
+  private async keys() {
+    const s = await this.d.store.secret();
+    if (s && (s.source === 'own' || s.session)) return s;
+    const pub = this.d.publisherKeys?.() ?? null;
+    if (!pub) return s;
+    const fresh = { ...pub, session: '', source: 'publisher' as const };
+    if (!s || s.apiId !== pub.apiId || s.apiHash !== pub.apiHash) await this.d.store.saveSecret(fresh);
+    return fresh;
   }
 
   private async keepSession(c: TgApi): Promise<void> {
@@ -177,7 +199,8 @@ export class TelegramService {
   // ——— The screen ———
 
   async status() {
-    const s = this.d.store.canSeal ? await this.d.store.secret() : null;
+    const s = this.d.store.canSeal ? await this.keys() : null;
+    const publisher = !!this.d.publisherKeys?.();
     let signedIn = false;
     if (s?.session) {
       try {
@@ -191,7 +214,11 @@ export class TelegramService {
     return {
       canSeal: this.d.store.canSeal,
       configured: !!s,
-      apiId: s?.apiId ?? null,
+      /** Whose keys: the person's own, the publisher's («ключи Quadro») or none yet. */
+      keys: s?.source ?? null,
+      /** The publisher's keys can be used (the screen offers «ключи Quadro»). */
+      publisherKeys: publisher,
+      apiId: s?.source === 'own' ? s.apiId : null,
       signedIn,
       me: signedIn ? this.me : null,
       step: signedIn ? 'done' : this.loginStep,
@@ -208,7 +235,16 @@ export class TelegramService {
     this.me = null;
     this.loginStep = null;
     this.dialogs = null;
-    await this.d.store.saveSecret({ apiId, apiHash, session: '' });
+    await this.d.store.saveSecret({ apiId, apiHash, session: '', source: 'own' });
+    return { ok: true };
+  }
+
+  /** Back to the publisher's keys («ключи Quadro»): the session of the own keys ends (signing in again is needed). */
+  async useQuadroKeys(): Promise<{ ok: true }> {
+    const pub = this.d.publisherKeys?.();
+    if (!pub) throw new UserError('Ключей Quadro пока нет — войдите со своими ключами', 'NO_PUBLISHER_KEYS');
+    await this.logout({});
+    await this.d.store.saveSecret({ ...pub, session: '', source: 'publisher' });
     return { ok: true };
   }
 

@@ -8,7 +8,7 @@ import { errorText, quadro, usePcEvents, useQuadro } from './quadro';
 // what it read. Nothing of Telegram is stored in Hub.
 
 type Kind = 'user' | 'bot' | 'group' | 'channel';
-type Status = { canSeal: boolean; configured: boolean; apiId: number | null; signedIn: boolean; me: { name: string; username?: string } | null; step: 'code' | 'password' | 'done' | null; allowed: number };
+type Status = { canSeal: boolean; configured: boolean; keys: 'own' | 'publisher' | null; publisherKeys: boolean; apiId: number | null; signedIn: boolean; me: { name: string; username?: string } | null; step: 'code' | 'qr' | 'password' | 'done' | null; allowed: number };
 type Chat = { id: string; kind: Kind; title: string; username?: string; unread?: number; lastAt?: string; allowed: boolean };
 type Read = { at: string; tool: string; chats: string[]; messages: number; files: number; bytes: number; query?: string; error?: string };
 type Login = { step: 'code' | 'qr' | 'password' | 'done' | 'error'; viaApp?: boolean; hint?: string; wrong?: boolean; url?: string; expiresMs?: number; message?: string };
@@ -84,7 +84,8 @@ function TelegramScreen() {
   else if (status && (!status.configured || changingKeys))
     body = (
       <KeysStep
-        hadKeys={status.configured}
+        first={!status.configured}
+        signedIn={status.signedIn}
         onCancel={changingKeys ? () => setChangingKeys(false) : null}
         onDone={async () => {
           setChangingKeys(false);
@@ -92,8 +93,8 @@ function TelegramScreen() {
         }}
       />
     );
-  else if (status && !status.signedIn) body = <LoginStep onDone={refresh} onChangeKeys={() => setChangingKeys(true)} />;
-  else if (status) body = <SignedIn status={status} onChanged={refresh} />;
+  else if (status && !status.signedIn) body = <LoginStep status={status} onDone={refresh} onChangeKeys={() => setChangingKeys(true)} />;
+  else if (status) body = <SignedIn status={status} onChanged={refresh} onOwnKeys={() => setChangingKeys(true)} />;
 
   return (
     <main className="tg">
@@ -111,7 +112,7 @@ function TelegramScreen() {
   );
 }
 
-function KeysStep({ hadKeys, onDone, onCancel }: { hadKeys: boolean; onDone: () => void; onCancel: (() => void) | null }) {
+function KeysStep({ first, signedIn, onDone, onCancel }: { first: boolean; signedIn: boolean; onDone: () => void; onCancel: (() => void) | null }) {
   const [apiId, setApiId] = useState('');
   const [apiHash, setApiHash] = useState('');
   const [busy, setBusy] = useState(false);
@@ -132,20 +133,24 @@ function KeysStep({ hadKeys, onDone, onCancel }: { hadKeys: boolean; onDone: () 
     <section className="q-card q-stack">
       <div className="tg-step">
         <KeyRound size={20} className="tg-accent" />
-        <h2>Шаг 1. Ключи приложения Telegram</h2>
+        <h2>{first ? 'Шаг 1. Ключи приложения Telegram' : 'Свои ключи Telegram'}</h2>
       </div>
-      <p className="q-muted">Telegram пускает сторонние программы только по ключам, которые вы создаёте сами. Это бесплатно и занимает пару минут.</p>
+      <p className="q-muted">
+        {first
+          ? 'Telegram пускает сторонние программы только по ключам приложения. Создать свои — бесплатно, пара минут.'
+          : 'Свои ключи нужны, только если ключи Quadro не подходят. Создать их — бесплатно, пара минут.'}
+      </p>
       <ol className="tg-howto">
         <li>
           Откройте{' '}
           <button type="button" className="tg-link" onClick={() => void quadro.ui.openExternal('https://my.telegram.org/apps')}>
             my.telegram.org <ExternalLink size={12} />
           </button>{' '}
-          и войдите своим номером — код придёт в приложение Telegram (не по SMS).
+          и войдите своим номером — код придёт в приложение Telegram (не по SMS). VPN лучше выключить.
         </li>
         <li>Нажмите «API development tools».</li>
         <li>
-          Заполните форму: <b>App title</b> — любое, например «Quadro Hub»; <b>Short name</b> — латиницей, например «quadrohub»; <b>Platform</b> — Desktop. Остальное можно не заполнять. Нажмите «Create application».
+          Заполните форму: <b>App title</b> — латиницей, например «QuadroHub»; <b>Short name</b> — латиницей, например «quadrohub»; <b>Platform</b> — Desktop. URL и Description оставьте пустыми. Нажмите «Create application».
         </li>
         <li>
           Скопируйте сюда <b>App api_id</b> (число) и <b>App api_hash</b> (32 знака).
@@ -177,8 +182,10 @@ function KeysStep({ hadKeys, onDone, onCancel }: { hadKeys: boolean; onDone: () 
         )}
       </div>
       <p className="q-subtle">
-        <ShieldCheck size={12} /> Ключи — ваши, никому их не давайте. Они хранятся только на этом ПК, зашифрованные Windows.{hadKeys ? ' Новые ключи заменят старые, вход в Telegram придётся повторить.' : ''}
+        <ShieldCheck size={12} /> Ключи — ваши, никому их не давайте. Они хранятся только на этом ПК, зашифрованные Windows.
+        {signedIn ? ' С новыми ключами вход в Telegram придётся повторить.' : ''}
       </p>
+      <KeysHelp />
     </section>
   );
 }
@@ -204,7 +211,7 @@ function QrCode({ text, size = 220 }: { text: string; size?: number }) {
 
 type Method = 'qr' | 'phone';
 
-function LoginStep({ onDone, onChangeKeys }: { onDone: () => void; onChangeKeys: () => void }) {
+function LoginStep({ status, onDone, onChangeKeys }: { status: Status; onDone: () => void; onChangeKeys: () => void }) {
   const [method, setMethod] = useState<Method>('qr');
   const [step, setStep] = useState<'start' | 'qr' | 'code' | 'password'>('start');
   const [phone, setPhone] = useState('');
@@ -369,16 +376,39 @@ function LoginStep({ onDone, onChangeKeys }: { onDone: () => void; onChangeKeys:
       <p className="q-subtle">
         <ShieldCheck size={12} /> Код, номер и пароль идут прямо в Telegram с этого ПК. ИИ их не видит и войти сам не может. Вход появится в Telegram в «Настройки → Устройства» как «Quadro Hub».
       </p>
-      <div>
+      <div className="q-row tg-wrap">
         <button type="button" className="tg-link" onClick={onChangeKeys}>
-          Изменить api_id и api_hash
+          {status.keys === 'publisher' ? 'Войти со своими ключами api_id и api_hash' : 'Изменить api_id и api_hash'}
         </button>
+        {status.keys === 'own' && status.publisherKeys && <QuadroKeysButton onDone={onDone} />}
       </div>
     </section>
   );
 }
 
-function SignedIn({ status, onChanged }: { status: Status; onChanged: () => void }) {
+/** Back to Quadro's keys: the own keys' session ends (signing in again). */
+function QuadroKeysButton({ onDone }: { onDone: () => void }) {
+  const [error, setError] = useState('');
+  return (
+    <>
+      <button
+        type="button"
+        className="tg-link"
+        onClick={() =>
+          void pc('useQuadroKeys').then(
+            () => onDone(),
+            (e) => setError(errorText(e)),
+          )
+        }
+      >
+        Вернуться к ключам Quadro
+      </button>
+      {error && <span className="tg-error">{error}</span>}
+    </>
+  );
+}
+
+function SignedIn({ status, onChanged, onOwnKeys }: { status: Status; onChanged: () => void; onOwnKeys: () => void }) {
   const [tab, setTab] = useState<Tab>('access');
   const [journalSeen, setJournalSeen] = useState<Read[] | null>(null);
   return (
@@ -404,7 +434,7 @@ function SignedIn({ status, onChanged }: { status: Status; onChanged: () => void
       </div>
       {tab === 'access' && <Access onChanged={onChanged} />}
       {tab === 'journal' && <Journal initial={journalSeen} onLoaded={setJournalSeen} />}
-      {tab === 'account' && <Account status={status} onChanged={onChanged} />}
+      {tab === 'account' && <Account status={status} onChanged={onChanged} onOwnKeys={onOwnKeys} />}
     </>
   );
 }
@@ -572,7 +602,7 @@ function Journal({ initial, onLoaded }: { initial: Read[] | null; onLoaded: (r: 
 
 const EXAMPLE = 'Посмотри в Telegram чат «UGC работа» и личку с заказчиком за октябрь–ноябрь и составь список работ, за которые мне ещё не заплатили: что за работа, когда сдал, сколько договорились, есть ли подтверждение оплаты.';
 
-function Account({ status, onChanged }: { status: Status; onChanged: () => void }) {
+function Account({ status, onChanged, onOwnKeys }: { status: Status; onChanged: () => void; onOwnKeys: () => void }) {
   const [confirm, setConfirm] = useState(false);
   const [all, setAll] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -604,7 +634,7 @@ function Account({ status, onChanged }: { status: Status; onChanged: () => void 
         <h2>Аккаунт</h2>
         <p className="q-muted">
           Вход: {status.me?.name}
-          {status.me?.username ? ` (@${status.me.username})` : ''} · api_id {status.apiId} · разрешено чатов: {status.allowed}
+          {status.me?.username ? ` (@${status.me.username})` : ''} · разрешено чатов: {status.allowed}
         </p>
         {!confirm ? (
           <div>
@@ -616,7 +646,8 @@ function Account({ status, onChanged }: { status: Status; onChanged: () => void 
           <div className="q-stack tg-confirm">
             <p>Сессия закроется в Telegram (исчезнет из «Устройств») и будет удалена с этого ПК. ИИ больше ничего не прочитает, пока вы не войдёте снова.</p>
             <label className="q-row">
-              <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} /> Удалить также api_id и api_hash, список разрешённых чатов и журнал
+              <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} /> Удалить также список разрешённых чатов и журнал
+              {status.keys === 'own' ? ', свои api_id и api_hash' : ''}
             </label>
             <div className="q-row">
               <button type="button" className="q-btn q-btn-danger" disabled={busy} onClick={() => void logout()}>
@@ -630,6 +661,57 @@ function Account({ status, onChanged }: { status: Status; onChanged: () => void 
         )}
         {error && <p className="tg-error">{error}</p>}
       </div>
+      <details className="q-card tg-more">
+        <summary>Дополнительно</summary>
+        <div className="q-stack">
+          <p className="q-muted">
+            Ключи приложения Telegram: {status.keys === 'own' ? `свои (api_id ${status.apiId})` : 'ключи Quadro'}.
+            {status.keys === 'own' ? '' : ' Свои ключи с my.telegram.org нужны, только если с ключами Quadro что-то не так.'}
+          </p>
+          <div className="q-row tg-wrap">
+            <button type="button" className="q-btn" onClick={onOwnKeys}>
+              {status.keys === 'own' ? 'Изменить свои ключи' : 'Войти со своими ключами'}
+            </button>
+            {status.keys === 'own' && status.publisherKeys && <QuadroKeysButton onDone={onChanged} />}
+          </div>
+        </div>
+      </details>
     </section>
+  );
+}
+
+/** What helps when my.telegram.org says «ERROR» or «Too many attempts» (checked against TDLib's answers and users' reports, 20.11.2026). */
+function KeysHelp() {
+  return (
+    <details className="tg-help">
+      <summary>Не получается на my.telegram.org? «ERROR» или «Too many attempts»</summary>
+      <h3>«ERROR» при «Create application»</h3>
+      <ul>
+        <li>
+          <b>Выключите VPN и прокси</b> — это самая частая причина (так советуют разработчики Telegram). Если без VPN сайт не открывается, включите VPN <b>той же страны, что и номер</b>.
+        </li>
+        <li>
+          <b>Другая сеть:</b> раздайте мобильный интернет с телефона и откройте сайт ещё раз.
+        </li>
+        <li>
+          <b>Другой браузер:</b> браузер телефона или режим инкогнито без расширений — блокировщики рекламы мешают форме.
+        </li>
+        <li>
+          <b>Поля по минимуму:</b> App title и Short name — латиницей без пробелов, например «QuadroHub» и «quadrohub» (короткое имя — 5–32 знака). Platform — Desktop. <b>URL и Description оставьте пустыми.</b>
+        </li>
+      </ul>
+      <h3>«Too many attempts»</h3>
+      <ul>
+        <li>Это временный запрет Telegram на частые попытки. Он бывает даже с первой попытки и проходит сам.</li>
+        <li>
+          <b>Не нажимайте снова:</b> каждая новая попытка продлевает запрет. Подождите около суток и сделайте одну аккуратную попытку по советам выше.
+        </li>
+      </ul>
+      <h3>Ещё</h3>
+      <ul>
+        <li>На один номер Telegram даёт одно приложение. Если вы его уже создавали, откройте «API development tools» и скопируйте api_id и api_hash оттуда.</li>
+        <li>Если номер совсем новый, Telegram иногда отказывает первые дни — попробуйте позже.</li>
+      </ul>
+    </details>
   );
 }

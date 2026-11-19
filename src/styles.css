@@ -322,3 +322,40 @@
   border: 1px dashed var(--color-border-strong);
   color: var(--color-muted-foreground);
 }
+
+.tg-wrap {
+  flex-wrap: wrap;
+}
+
+.tg-more summary,
+.tg-help summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.tg-more[open] summary,
+.tg-help[open] summary {
+  margin-bottom: 12px;
+}
+
+.tg-help {
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.tg-help ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.tg-help h3 {
+  margin: 12px 0 6px;
+}
+
+.tg-help h3:first-of-type {
+  margin-top: 0;
+}

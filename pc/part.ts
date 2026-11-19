@@ -9,11 +9,23 @@ import type { TgFactory } from './types';
 // chooses chats (host.rpc.handle — only its screen calls these); the AI reads through Hub's MCP (host.mcp.handle — only the AI
 // calls these, and they never sign in, never see the phone, code or password, and read only the allowed chats).
 
-export const SCREEN_METHODS = ['status', 'setKeys', 'sendCode', 'signIn', 'password', 'qrStart', 'qrCancel', 'logout', 'chats', 'setAccess', 'access', 'journal', 'clearJournal'] as const;
+export const SCREEN_METHODS = ['status', 'setKeys', 'useQuadroKeys', 'sendCode', 'signIn', 'password', 'qrStart', 'qrCancel', 'logout', 'chats', 'setAccess', 'access', 'journal', 'clearJournal'] as const;
 /** The AI's tools: manifest `mcp.tools[].handler` = `pc:<name>`. */
 export const AI_TOOLS = ['chats', 'messages', 'search', 'file'] as const;
 
 type Host = Pick<PartHostApi, 'app' | 'rpc' | 'lifecycle' | 'events'> & Partial<Pick<PartHostApi, 'mcp' | 'secrets' | 'net'>>;
+
+/**
+ * The publisher's keys («ключи Quadro»), as the platform hands them to the part — proposed contract: the part's
+ * `host.app.config.publisher.telegram = { apiId, apiHash }`, filled by the program from the publisher's values of the package
+ * (not in the package itself). Absent — null: the person uses their own keys.
+ */
+export function publisherKeysOf(config: unknown): { apiId: number; apiHash: string } | null {
+  const t = (config as { publisher?: { telegram?: { apiId?: unknown; apiHash?: unknown } } } | null)?.publisher?.telegram;
+  const apiId = Number(t?.apiId);
+  const apiHash = String(t?.apiHash ?? '').toLowerCase();
+  return Number.isInteger(apiId) && apiId > 0 && /^[0-9a-f]{32}$/.test(apiHash) ? { apiId, apiHash } : null;
+}
 
 /** `sealer` — Windows' sealing if this program has it (by default the host's, if any). */
 export function serveTelegram(host: Host, factory?: TgFactory, sealer: Host['secrets'] | null = host.secrets ?? null): TelegramService {
@@ -21,6 +33,7 @@ export function serveTelegram(host: Host, factory?: TgFactory, sealer: Host['sec
   const open = host.net?.websocket;
   const service = new TelegramService({
     store,
+    publisherKeys: () => publisherKeysOf(host.app.config),
     onRead: (entry) => host.events.emit('read', entry),
     onLogin: (state) => host.events.emit('login', state),
     factory:
@@ -34,6 +47,7 @@ export function serveTelegram(host: Host, factory?: TgFactory, sealer: Host['sec
   const obj = (x: unknown) => (x && typeof x === 'object' ? x : {});
   host.rpc.handle('status', () => service.status());
   host.rpc.handle('setKeys', (x) => service.setKeys(obj(x)));
+  host.rpc.handle('useQuadroKeys', () => service.useQuadroKeys());
   host.rpc.handle('sendCode', (x) => service.sendCode(obj(x)));
   host.rpc.handle('signIn', (x) => service.signIn(obj(x)));
   host.rpc.handle('password', (x) => service.password(obj(x)));

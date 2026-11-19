@@ -52,6 +52,16 @@ npm run qhapp -- pack "<эта папка>/dist" --out "<эта папка>/out/
 npm run qhapp -- check "<эта папка>/out/quadro.telegram-1.0.0.qhapp" --publisher quadro --trust official --key quadro-1=<открытый ключ>
 ```
 
+## Ключи Telegram (api_id, api_hash)
+
+- **Ключи Quadro** (издателя) — как у всех сторонних клиентов: человек сразу входит по QR. Их нельзя класть в пакет: пакет
+  публичный, а опубликованный api_hash Telegram ограничивает (`API_ID_PUBLISHED_FLOOD`). Часть берёт их из
+  `host.app.config.publisher.telegram = { apiId, apiHash }` — это значение издателя, которое платформа отдаёт части при
+  установке (`publisherKeysOf` в `pc/part.ts`; API платформы — в работе). Пока его нет — свои ключи.
+- **Свои ключи** с my.telegram.org — запасной путь («Аккаунт → Дополнительно», ссылка на шаге входа); подсказки при «ERROR» и
+  «Too many attempts» — на экране ключей.
+- Сессия помнит, с какими ключами создана: смена ключей издателя не ломает вход.
+
 ## Замечания
 
 - 1.0.0 — GramJS 2.26.22 (архивный); с 1.1.0 — teleproto. Клиент спрятан за интерфейсом `TgApi` (`pc/types.ts`), вся

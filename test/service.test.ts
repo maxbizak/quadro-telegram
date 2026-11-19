@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { LIMITS, TelegramService } from '../pc/service';
+import { LIMITS, TelegramService, type ApiKeys } from '../pc/service';
+import { publisherKeysOf } from '../pc/part';
 import { Store } from '../pc/store';
 import { fakeSealer, msg, stubFactory, stubWorld, type StubChat } from './stub-tg';
 
@@ -14,12 +15,12 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-function setup(world?: StubChat[], sealer: typeof fakeSealer | null = fakeSealer) {
+function setup(world?: StubChat[], sealer: typeof fakeSealer | null = fakeSealer, publisher: { current: ApiKeys | null } = { current: null }) {
   const stub = stubFactory(world);
   const store = new Store(dir, sealer);
   const logins: Array<{ step: string; url?: string; wrong?: boolean }> = [];
-  const service = new TelegramService({ store, factory: stub.factory, now: () => NOW, offsetMin: 180, onLogin: (s) => logins.push(s) });
-  return { ...stub, store, service, logins };
+  const service = new TelegramService({ store, factory: stub.factory, now: () => NOW, offsetMin: 180, onLogin: (s) => logins.push(s), publisherKeys: () => publisher.current });
+  return { ...stub, store, service, logins, publisher };
 }
 
 async function signedIn(world?: StubChat[]) {
@@ -114,6 +115,58 @@ describe('sign-in on the screen', () => {
     await s.service.logout({ keys: true });
     expect(existsSync(join(dir, 'secret.bin'))).toBe(false);
     expect(s.store.allowed()).toHaveLength(0);
+  });
+});
+
+describe('keys: Quadro’s (the publisher’s) or the person’s own', () => {
+  const QUADRO = { apiId: 777000, apiHash: 'abcdefabcdefabcdefabcdefabcdef12' };
+
+  it('with Quadro’s keys there is no step of keys: straight to sign-in, the session remembers them', async () => {
+    const { service, state, store } = setup(undefined, fakeSealer, { current: QUADRO });
+    expect(await service.status()).toMatchObject({ configured: true, keys: 'publisher', publisherKeys: true, apiId: null, signedIn: false });
+    await service.sendCode({ phone: '+79991234567' });
+    expect(state.calls).toContain('connect 777000');
+    await service.signIn({ code: '12345' });
+    await service.password({ password: 'secret' });
+    expect(await store.secret()).toMatchObject({ apiId: 777000, source: 'publisher', session: 'valid-session' });
+  });
+
+  it('a new publisher key never breaks a signed-in session; a new sign-in takes the new key', async () => {
+    const pub = { current: QUADRO as ApiKeys | null };
+    const s = setup(undefined, fakeSealer, pub);
+    await s.service.sendCode({ phone: '+79991234567' });
+    await s.service.signIn({ code: '12345' });
+    await s.service.password({ password: 'secret' });
+    await s.service.stop();
+    pub.current = { apiId: 888000, apiHash: '0123456789abcdef0123456789abcdef' };
+    expect(await s.service.status()).toMatchObject({ signedIn: true, keys: 'publisher' });
+    expect((await s.store.secret())!.apiId).toBe(777000);
+    await s.service.logout({});
+    expect(await s.service.status()).toMatchObject({ signedIn: false, keys: 'publisher' });
+    expect((await s.store.secret())!.apiId).toBe(888000);
+  });
+
+  it('own keys win over Quadro’s; «ключи Quadro» brings them back (signing in again)', async () => {
+    const s = setup(undefined, fakeSealer, { current: QUADRO });
+    await s.service.setKeys({ apiId: '123456', apiHash: '0123456789abcdef0123456789abcdef' });
+    expect(await s.service.status()).toMatchObject({ keys: 'own', apiId: 123456 });
+    await s.service.useQuadroKeys();
+    expect(await s.service.status()).toMatchObject({ keys: 'publisher', apiId: null, signedIn: false });
+    await s.service.setKeys({ apiId: '123456', apiHash: '0123456789abcdef0123456789abcdef' });
+    await s.service.logout({ keys: true });
+    expect(await s.service.status()).toMatchObject({ keys: 'publisher', configured: true });
+  });
+
+  it('without Quadro’s keys: own keys first, «ключи Quadro» says there are none yet', async () => {
+    const s = setup();
+    expect(await s.service.status()).toMatchObject({ configured: false, keys: null, publisherKeys: false });
+    await expect(s.service.useQuadroKeys()).rejects.toThrow(/Ключей Quadro пока нет/);
+  });
+
+  it('reads the publisher’s keys only in their exact form', () => {
+    expect(publisherKeysOf({ publisher: { telegram: { apiId: '777000', apiHash: 'ABCDEFABCDEFABCDEFABCDEFABCDEF12' } } })).toEqual({ apiId: 777000, apiHash: 'abcdefabcdefabcdefabcdefabcdef12' });
+    for (const bad of [null, {}, { publisher: {} }, { publisher: { telegram: { apiId: 'x', apiHash: 'abcdefabcdefabcdefabcdefabcdef12' } } }, { publisher: { telegram: { apiId: 1, apiHash: 'short' } } }])
+      expect(publisherKeysOf(bad)).toBeNull();
   });
 });
 
