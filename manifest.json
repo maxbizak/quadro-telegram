@@ -1,0 +1,91 @@
+{
+  "manifest": 2,
+  "id": "quadro.telegram",
+  "name": "Telegram",
+  "summary": "Ваш ИИ читает выбранные вами чаты Telegram — только чтение, всё на вашем ПК",
+  "description": "Подключает ваш аккаунт Telegram к ИИ, который вы подключили к Quadro Hub (Claude, ChatGPT, Codex). Вы сами входите в Telegram на экране приложения и отмечаете, какие чаты ИИ может читать — по умолчанию ни один. ИИ читает только эти чаты: сообщения за период страницами, поиск, ссылки, картинки и файлы. Он ничего не отправляет, не удаляет и не отмечает прочитанным. Переписка и сессия остаются на вашем ПК (сессия зашифрована Windows) и не хранятся на сервере Hub. Каждое чтение ИИ записывается в журнал «Что читал ИИ». Права: своя папка данных на ПК (сессия, список чатов, журнал), сеть только к адресам Telegram для веб-клиентов (*.web.telegram.org), инструменты для ИИ.",
+  "version": "1.0.0",
+  "icon": "message-circle",
+  "engines": { "hub": "^2.0" },
+  "license": "proprietary",
+  "madeByAi": "mostly",
+  "parts": {
+    "client": "client",
+    "pc": {
+      "entry": "pc/part.cjs",
+      "platforms": ["win32-x64"],
+      "activation": ["onScreen"]
+    }
+  },
+  "permissions": ["pc.files.own", "net:*.web.telegram.org", "pc.mcp"],
+  "views": { "main": { "surface": "web", "title": "Telegram", "entry": "index.html" } },
+  "contributes": {
+    "shell.railApp@1": [{ "id": "main", "title": "Telegram", "icon": "message-circle", "open": { "view": "main" } }]
+  },
+  "mcp": {
+    "tools": [
+      {
+        "name": "chats",
+        "title": "Чаты Telegram",
+        "description": "Чаты Telegram, которые владелец разрешил ИИ читать (группы и личные): название, вид, chat id. Вызывайте первым — другие чаты недоступны.",
+        "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+        "handler": "pc:chats",
+        "readOnly": true
+      },
+      {
+        "name": "messages",
+        "title": "Сообщения чата",
+        "description": "Сообщения разрешённого чата за период, от старых к новым, страницами: время, автор, текст, ссылки, вложения (их номер — для telegram_file). Без периода — последние 30 дней. Если в ответе есть nextCursor — вызовите снова с cursor, чтобы получить следующую страницу.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "chat": { "type": "string", "description": "chat id, @имя или название из telegram_chats" },
+            "from": { "type": "string", "description": "Начало периода: 2026-11-01 или 2026-11-01T18:00 (часовой пояс ПК владельца, если не указан)" },
+            "to": { "type": "string", "description": "Конец периода, включительно; по умолчанию — сейчас" },
+            "cursor": { "type": "string", "description": "nextCursor из прошлого ответа" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 300, "description": "Сообщений на странице, по умолчанию 100" }
+          },
+          "required": ["chat"],
+          "additionalProperties": false
+        },
+        "handler": "pc:messages",
+        "readOnly": true
+      },
+      {
+        "name": "search",
+        "title": "Поиск в чатах",
+        "description": "Поиск сообщений по словам в разрешённых чатах (во всех или в одном), новые первыми: время, автор, текст, ссылки, вложения.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": { "type": "string", "description": "Что искать, например «оплата» или «шапка»" },
+            "chat": { "type": "string", "description": "Только в этом чате (chat id, @имя или название); без него — во всех разрешённых" },
+            "from": { "type": "string", "description": "Не раньше: 2026-11-01" },
+            "to": { "type": "string", "description": "Не позже: 2026-11-30" },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Сколько найти, по умолчанию 50" }
+          },
+          "required": ["query"],
+          "additionalProperties": false
+        },
+        "handler": "pc:search",
+        "readOnly": true
+      },
+      {
+        "name": "file",
+        "title": "Файл или картинка",
+        "description": "Вложение сообщения разрешённого чата: картинку — как изображение, текстовый файл и .docx — текстом, остальное (PDF, архивы, видео) — описание, превью и путь к файлу на ПК владельца.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "chat": { "type": "string", "description": "chat id, @имя или название из telegram_chats" },
+            "message": { "type": "integer", "minimum": 1, "description": "Номер сообщения (#… из telegram_messages)" }
+          },
+          "required": ["chat", "message"],
+          "additionalProperties": false
+        },
+        "handler": "pc:file",
+        "readOnly": true
+      }
+    ]
+  }
+}

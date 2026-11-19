@@ -1,0 +1,548 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Bot, Check, ExternalLink, History, KeyRound, LogOut, Megaphone, MessageCircle, RefreshCw, Search, ShieldCheck, User, Users } from 'lucide-react';
+import { errorText, quadro, usePcEvents, useQuadro } from './quadro';
+
+// «Telegram»'s screen in Hub's sandbox. Everything goes to its own part on this PC (quadro.pc.call): the keys of my.telegram.org,
+// the sign-in (phone, code, cloud password — typed here by the person, never seen by the AI), which chats the AI may read, and
+// what it read. Nothing of Telegram is stored in Hub.
+
+type Kind = 'user' | 'bot' | 'group' | 'channel';
+type Status = { canSeal: boolean; configured: boolean; apiId: number | null; signedIn: boolean; me: { name: string; username?: string } | null; step: 'code' | 'password' | 'done' | null; allowed: number };
+type Chat = { id: string; kind: Kind; title: string; username?: string; unread?: number; lastAt?: string; allowed: boolean };
+type Read = { at: string; tool: string; chats: string[]; messages: number; files: number; bytes: number; query?: string; error?: string };
+type Login = { step: 'code' | 'password' | 'done'; viaApp?: boolean; hint?: string };
+type Tab = 'access' | 'journal' | 'account';
+
+const pc = <T,>(method: string, params?: unknown) => quadro.pc.call<T>(method, params);
+const KIND: Record<Kind, { label: string; icon: typeof User }> = {
+  user: { label: 'Личный', icon: User },
+  bot: { label: 'Бот', icon: Bot },
+  group: { label: 'Группа', icon: Users },
+  channel: { label: 'Канал', icon: Megaphone },
+};
+const TOOL: Record<string, string> = { chats: 'Список чатов', messages: 'Читал сообщения', search: 'Искал', file: 'Открыл файл' };
+const when = (iso?: string) => (iso ? new Date(iso).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
+const kb = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} КБ` : `${(n / 1048576).toFixed(1)} МБ`);
+
+export function App() {
+  const { ctx, error } = useQuadro();
+  if (error) {
+    return (
+      <main className="tg">
+        <h1>Telegram</h1>
+        <p className="q-muted">Этот экран работает внутри Quadro Hub: поставьте приложение из Каталога.</p>
+      </main>
+    );
+  }
+  if (!ctx) return <main className="tg q-muted">Загрузка…</main>;
+  if (ctx.pc === false) {
+    return (
+      <main className="tg">
+        <Header />
+        <section className="q-card tg-center">
+          <MessageCircle size={28} className="tg-accent" />
+          <h2>Telegram подключается в программе Quadro Hub на ПК</h2>
+          <p className="q-muted">Вход в Telegram и переписка остаются на вашем компьютере. Откройте Quadro Hub в программе для Windows.</p>
+        </section>
+      </main>
+    );
+  }
+  return <TelegramScreen />;
+}
+
+function Header() {
+  return (
+    <header>
+      <h1>Telegram</h1>
+      <p className="q-muted">Ваш ИИ читает только чаты, которые вы отметите. Всё остаётся на этом ПК.</p>
+    </header>
+  );
+}
+
+function TelegramScreen() {
+  const [status, setStatus] = useState<Status | null>(null);
+  const [message, setMessage] = useState('');
+  const [changingKeys, setChangingKeys] = useState(false);
+  const refresh = useCallback(async () => {
+    try {
+      setStatus(await pc<Status>('status'));
+    } catch (e) {
+      setMessage(errorText(e));
+    }
+  }, []);
+  useEffect(() => void refresh(), [refresh]);
+
+  let body: React.ReactNode = <p className="q-muted">Проверяю Telegram…</p>;
+  if (status && !status.canSeal)
+    body = (
+      <section className="q-card tg-warn" role="alert">
+        <h2>Обновите программу Quadro Hub</h2>
+        <p className="q-muted">Этой версии программы нечем зашифровать вход в Telegram на ПК. Без шифрования приложение ничего не сохраняет — обновите программу и откройте экран снова.</p>
+      </section>
+    );
+  else if (status && (!status.configured || changingKeys))
+    body = (
+      <KeysStep
+        hadKeys={status.configured}
+        onCancel={changingKeys ? () => setChangingKeys(false) : null}
+        onDone={async () => {
+          setChangingKeys(false);
+          await refresh();
+        }}
+      />
+    );
+  else if (status && !status.signedIn) body = <LoginStep onDone={refresh} onChangeKeys={() => setChangingKeys(true)} />;
+  else if (status) body = <SignedIn status={status} onChanged={refresh} />;
+
+  return (
+    <main className="tg">
+      <Header />
+      {message && (
+        <div className="q-card tg-message" role="alert">
+          <span>{message}</span>
+          <button type="button" className="q-btn" onClick={() => setMessage('')}>
+            Закрыть
+          </button>
+        </div>
+      )}
+      {body}
+    </main>
+  );
+}
+
+function KeysStep({ hadKeys, onDone, onCancel }: { hadKeys: boolean; onDone: () => void; onCancel: (() => void) | null }) {
+  const [apiId, setApiId] = useState('');
+  const [apiHash, setApiHash] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const save = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await pc('setKeys', { apiId: apiId.trim(), apiHash: apiHash.trim() });
+      onDone();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="q-card q-stack">
+      <div className="tg-step">
+        <KeyRound size={20} className="tg-accent" />
+        <h2>Шаг 1. Ключи приложения Telegram</h2>
+      </div>
+      <p className="q-muted">Telegram пускает сторонние программы только по ключам, которые вы создаёте сами. Это бесплатно и занимает пару минут.</p>
+      <ol className="tg-howto">
+        <li>
+          Откройте{' '}
+          <button type="button" className="tg-link" onClick={() => void quadro.ui.openExternal('https://my.telegram.org/apps')}>
+            my.telegram.org <ExternalLink size={12} />
+          </button>{' '}
+          и войдите своим номером — код придёт в приложение Telegram (не по SMS).
+        </li>
+        <li>Нажмите «API development tools».</li>
+        <li>
+          Заполните форму: <b>App title</b> — любое, например «Quadro Hub»; <b>Short name</b> — латиницей, например «quadrohub»; <b>Platform</b> — Desktop. Остальное можно не заполнять. Нажмите «Create application».
+        </li>
+        <li>
+          Скопируйте сюда <b>App api_id</b> (число) и <b>App api_hash</b> (32 знака).
+        </li>
+      </ol>
+      <div className="tg-fields">
+        <label className="q-label">
+          api_id
+          <input className="q-input" inputMode="numeric" autoComplete="off" value={apiId} onChange={(e) => setApiId(e.target.value)} placeholder="12345678" />
+        </label>
+        <label className="q-label">
+          api_hash
+          <input className="q-input" type="password" autoComplete="off" spellCheck={false} value={apiHash} onChange={(e) => setApiHash(e.target.value)} placeholder="32 знака" />
+        </label>
+      </div>
+      {error && (
+        <p className="tg-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="q-row">
+        <button type="button" className="q-btn q-btn-primary" disabled={busy || !apiId.trim() || !apiHash.trim()} onClick={() => void save()}>
+          Сохранить ключи
+        </button>
+        {onCancel && (
+          <button type="button" className="q-btn" onClick={onCancel}>
+            Отмена
+          </button>
+        )}
+      </div>
+      <p className="q-subtle">
+        <ShieldCheck size={12} /> Ключи — ваши, никому их не давайте. Они хранятся только на этом ПК, зашифрованные Windows.{hadKeys ? ' Новые ключи заменят старые, вход в Telegram придётся повторить.' : ''}
+      </p>
+    </section>
+  );
+}
+
+function LoginStep({ onDone, onChangeKeys }: { onDone: () => void; onChangeKeys: () => void }) {
+  const [step, setStep] = useState<'phone' | 'code' | 'password'>('phone');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [info, setInfo] = useState<Login | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const run = async (fn: () => Promise<Login>) => {
+    setBusy(true);
+    setError('');
+    try {
+      const r = await fn();
+      setInfo(r);
+      if (r.step === 'done') {
+        setPassword('');
+        onDone();
+      } else setStep(r.step);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="q-card q-stack">
+      <div className="tg-step">
+        <MessageCircle size={20} className="tg-accent" />
+        <h2>Шаг 2. Вход в Telegram</h2>
+      </div>
+      {step === 'phone' && (
+        <form
+          className="q-stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(() => pc<Login>('sendCode', { phone }));
+          }}
+        >
+          <label className="q-label">
+            Номер телефона аккаунта
+            <input className="q-input tg-narrow" type="tel" autoComplete="off" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+79991234567" />
+          </label>
+          <div>
+            <button type="submit" className="q-btn q-btn-primary" disabled={busy || !phone.trim()}>
+              Получить код
+            </button>
+          </div>
+        </form>
+      )}
+      {step === 'code' && (
+        <form
+          className="q-stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(() => pc<Login>('signIn', { code }));
+          }}
+        >
+          <p className="q-muted">{info?.viaApp ? 'Код пришёл в Telegram на другом вашем устройстве (чат «Telegram»).' : 'Код пришёл по SMS.'}</p>
+          <label className="q-label">
+            Код
+            <input className="q-input tg-narrow" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} placeholder="12345" />
+          </label>
+          <div className="q-row">
+            <button type="submit" className="q-btn q-btn-primary" disabled={busy || !code.trim()}>
+              Войти
+            </button>
+            <button type="button" className="q-btn" onClick={() => setStep('phone')}>
+              Другой номер
+            </button>
+          </div>
+        </form>
+      )}
+      {step === 'password' && (
+        <form
+          className="q-stack"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(() => pc<Login>('password', { password }));
+          }}
+        >
+          <p className="q-muted">У аккаунта включён облачный пароль (двухэтапная проверка).{info?.hint ? ` Подсказка: «${info.hint}».` : ''}</p>
+          <label className="q-label">
+            Облачный пароль
+            <input className="q-input tg-narrow" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          </label>
+          <div>
+            <button type="submit" className="q-btn q-btn-primary" disabled={busy || !password}>
+              Войти
+            </button>
+          </div>
+        </form>
+      )}
+      {error && (
+        <p className="tg-error" role="alert">
+          {error}
+        </p>
+      )}
+      <p className="q-subtle">
+        <ShieldCheck size={12} /> Номер, код и пароль вводите только здесь: они идут прямо в Telegram с этого ПК. ИИ их не видит и войти сам не может. Вход появится в Telegram в «Настройки → Устройства» как «Quadro Hub».
+      </p>
+      <div>
+        <button type="button" className="tg-link" onClick={onChangeKeys}>
+          Изменить api_id и api_hash
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SignedIn({ status, onChanged }: { status: Status; onChanged: () => void }) {
+  const [tab, setTab] = useState<Tab>('access');
+  const [journalSeen, setJournalSeen] = useState<Read[] | null>(null);
+  return (
+    <>
+      <div className="q-row tg-me">
+        <span className="q-badge">
+          <Check size={12} /> Подключён: {status.me?.name}
+          {status.me?.username ? ` · @${status.me.username}` : ''}
+        </span>
+      </div>
+      <div className="tg-tabs" role="tablist" aria-label="Разделы">
+        {(
+          [
+            ['access', 'Доступ для ИИ'],
+            ['journal', 'Что читал ИИ'],
+            ['account', 'Аккаунт'],
+          ] as const
+        ).map(([id, label]) => (
+          <button key={id} type="button" role="tab" aria-selected={tab === id} className="tg-tab" onClick={() => setTab(id)}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {tab === 'access' && <Access onChanged={onChanged} />}
+      {tab === 'journal' && <Journal initial={journalSeen} onLoaded={setJournalSeen} />}
+      {tab === 'account' && <Account status={status} onChanged={onChanged} />}
+    </>
+  );
+}
+
+function Access({ onChanged }: { onChanged: () => void }) {
+  const [chats, setChats] = useState<Chat[] | null>(null);
+  const [query, setQuery] = useState('');
+  const [kind, setKind] = useState<'all' | 'allowed' | 'user' | 'group' | 'channel' | 'bot'>('all');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const load = useCallback(async (refresh = false) => {
+    setError('');
+    try {
+      setChats(await pc<Chat[]>('chats', { refresh }));
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }, []);
+  useEffect(() => void load(), [load]);
+  const toggle = async (chat: Chat) => {
+    setBusy(chat.id);
+    setError('');
+    try {
+      await pc('setAccess', { id: chat.id, allowed: !chat.allowed });
+      setChats((list) => (list ?? []).map((c) => (c.id === chat.id ? { ...c, allowed: !c.allowed } : c)));
+      onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (chats ?? []).filter((c) => (kind === 'all' ? true : kind === 'allowed' ? c.allowed : c.kind === kind) && (!q || c.title.toLowerCase().includes(q) || c.username?.toLowerCase().includes(q)));
+  }, [chats, query, kind]);
+  const allowed = (chats ?? []).filter((c) => c.allowed).length;
+  return (
+    <section className="q-stack">
+      <div className="q-card q-stack">
+        <p className="q-muted">
+          Отметьте чаты, которые ИИ может читать — вместе с файлами, картинками и ссылками. По умолчанию — ни одного. Остальные чаты ИИ не видит, даже их названия.
+        </p>
+        <div className="tg-filters">
+          <label className="tg-search">
+            <Search size={16} className="q-muted" />
+            <input className="q-input" aria-label="Найти чат" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти чат" />
+          </label>
+          <select className="q-select tg-kind" aria-label="Какие чаты" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+            <option value="all">Все чаты</option>
+            <option value="allowed">Разрешённые ИИ</option>
+            <option value="group">Группы</option>
+            <option value="user">Личные</option>
+            <option value="channel">Каналы</option>
+            <option value="bot">Боты</option>
+          </select>
+          <button type="button" className="q-btn" onClick={() => void load(true)} aria-label="Обновить список">
+            <RefreshCw size={16} /> Обновить
+          </button>
+        </div>
+        <p className="q-subtle">Разрешено ИИ: {allowed}</p>
+      </div>
+      {error && (
+        <p className="tg-error" role="alert">
+          {error}
+        </p>
+      )}
+      {!chats ? (
+        <p className="q-muted">Загружаю чаты…</p>
+      ) : shown.length === 0 ? (
+        <p className="q-muted">Ничего не найдено.</p>
+      ) : (
+        <ul className="q-list">
+          {shown.map((c) => {
+            const K = KIND[c.kind];
+            return (
+              <li key={c.id} className="tg-chat">
+                <K.icon size={18} className={c.allowed ? 'tg-accent' : 'q-muted'} />
+                <div className="tg-grow">
+                  <div className="tg-name">{c.title}</div>
+                  <div className="q-subtle">
+                    {K.label}
+                    {c.username ? ` · @${c.username}` : ''}
+                    {c.lastAt ? ` · ${when(c.lastAt)}` : ''}
+                  </div>
+                </div>
+                <label className="tg-switch">
+                  <input type="checkbox" role="switch" aria-label={`ИИ может читать «${c.title}»`} checked={c.allowed} disabled={busy === c.id} onChange={() => void toggle(c)} />
+                  <span aria-hidden="true" />
+                  <span className="tg-switch-label">{c.allowed ? 'ИИ читает' : 'Закрыт'}</span>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function Journal({ initial, onLoaded }: { initial: Read[] | null; onLoaded: (r: Read[]) => void }) {
+  const [list, setList] = useState<Read[] | null>(initial);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    pc<Read[]>('journal', { limit: 200 }).then(
+      (r) => {
+        setList(r);
+        onLoaded(r);
+      },
+      (e) => setError(errorText(e)),
+    );
+  }, [onLoaded]);
+  const onRead = useCallback((name: string, data: unknown) => {
+    if (name === 'read') setList((old) => [data as Read, ...(old ?? [])].slice(0, 200));
+  }, []);
+  usePcEvents(onRead);
+  const clear = async () => {
+    try {
+      await pc('clearJournal');
+      setList([]);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  return (
+    <section className="q-stack">
+      <p className="q-muted">Каждое обращение ИИ к Telegram: когда, что делал, в каких чатах и сколько. Само содержимое сюда не пишется. Журнал хранится только на этом ПК.</p>
+      {error && <p className="tg-error">{error}</p>}
+      {!list ? (
+        <p className="q-muted">Загружаю…</p>
+      ) : list.length === 0 ? (
+        <div className="q-card tg-center">
+          <History size={24} className="q-muted" />
+          <h2>ИИ ещё ничего не читал</h2>
+        </div>
+      ) : (
+        <>
+          <ul className="q-list">
+            {list.map((r, i) => (
+              <li key={`${r.at}-${i}`} className="tg-read">
+                <span className="q-subtle tg-time">{when(r.at)}</span>
+                <div className="tg-grow">
+                  <div>
+                    <b>{TOOL[r.tool] ?? r.tool}</b>
+                    {r.query ? ` «${r.query}»` : ''}
+                    {r.chats.length ? ` — ${r.chats.map((c) => `«${c}»`).join(', ')}` : ''}
+                  </div>
+                  <div className="q-subtle">
+                    {r.error ? <span className="tg-error">Отказ: {r.error}</span> : [r.messages ? `${r.messages} сообщ.` : '', r.files ? `${r.files} файл` : '', r.bytes ? kb(r.bytes) : ''].filter(Boolean).join(' · ')}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <div>
+            <button type="button" className="q-btn" onClick={() => void clear()}>
+              Очистить журнал
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+const EXAMPLE = 'Посмотри в Telegram чат «UGC работа» и личку с заказчиком за октябрь–ноябрь и составь список работ, за которые мне ещё не заплатили: что за работа, когда сдал, сколько договорились, есть ли подтверждение оплаты.';
+
+function Account({ status, onChanged }: { status: Status; onChanged: () => void }) {
+  const [confirm, setConfirm] = useState(false);
+  const [all, setAll] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const logout = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await pc('logout', { keys: all });
+      void quadro.ui.toast('Вы вышли из Telegram', 'success');
+      onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="q-stack">
+      <div className="q-card q-stack">
+        <h2>Как спросить ИИ</h2>
+        <p className="q-muted">
+          Подключите свой ИИ к Quadro Hub и разрешите ему приложение «Telegram». ИИ увидит инструменты <code>telegram_chats</code>, <code>telegram_messages</code>, <code>telegram_search</code> и <code>telegram_file</code> — только для чтения
+          разрешённых чатов. Например:
+        </p>
+        <textarea className="q-textarea" readOnly rows={3} value={EXAMPLE} aria-label="Пример просьбы к ИИ" onFocus={(e) => e.currentTarget.select()} />
+      </div>
+      <div className="q-card q-stack">
+        <h2>Аккаунт</h2>
+        <p className="q-muted">
+          Вход: {status.me?.name}
+          {status.me?.username ? ` (@${status.me.username})` : ''} · api_id {status.apiId} · разрешено чатов: {status.allowed}
+        </p>
+        {!confirm ? (
+          <div>
+            <button type="button" className="q-btn q-btn-danger" onClick={() => setConfirm(true)}>
+              <LogOut size={16} /> Выйти из Telegram
+            </button>
+          </div>
+        ) : (
+          <div className="q-stack tg-confirm">
+            <p>Сессия закроется в Telegram (исчезнет из «Устройств») и будет удалена с этого ПК. ИИ больше ничего не прочитает, пока вы не войдёте снова.</p>
+            <label className="q-row">
+              <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} /> Удалить также api_id и api_hash, список разрешённых чатов и журнал
+            </label>
+            <div className="q-row">
+              <button type="button" className="q-btn q-btn-danger" disabled={busy} onClick={() => void logout()}>
+                Выйти
+              </button>
+              <button type="button" className="q-btn" onClick={() => setConfirm(false)}>
+                Отмена
+              </button>
+            </div>
+          </div>
+        )}
+        {error && <p className="tg-error">{error}</p>}
+      </div>
+    </section>
+  );
+}

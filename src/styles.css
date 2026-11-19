@@ -1,0 +1,290 @@
+/* «Telegram» on top of Hub's kit (/pkg-sdk/v1/quadro-ui.css): colours only from the theme's tokens. */
+.tg {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+.tg header p {
+  margin: 0;
+}
+
+.tg-accent {
+  color: var(--color-brand-text);
+}
+
+.tg-error {
+  margin: 0;
+  color: var(--color-destructive-text);
+  font-size: 13px;
+}
+
+.tg-warn {
+  border-color: var(--color-warning);
+}
+
+.tg-message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-color: var(--color-warning);
+}
+
+.tg-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 32px 16px;
+  text-align: center;
+}
+
+.tg-center h2 {
+  margin: 4px 0 0;
+}
+
+.tg-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tg-step h2 {
+  margin: 0;
+}
+
+.tg-howto {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.tg-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-brand-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.tg-link:focus-visible,
+.tg-tab:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+.tg-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+
+@media (min-width: 640px) {
+  .tg-fields {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+}
+
+.tg-fields .q-label,
+.tg .q-stack > .q-label,
+.tg form .q-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tg-narrow {
+  max-width: 260px;
+}
+
+.tg .q-subtle svg {
+  vertical-align: -2px;
+}
+
+.tg-me .q-badge {
+  gap: 4px;
+}
+
+.tg-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tg-tab {
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  font: 14px var(--font-sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tg-tab:hover {
+  color: var(--color-foreground);
+}
+
+.tg-tab[aria-selected='true'] {
+  border-bottom-color: var(--color-brand);
+  color: var(--color-foreground);
+  font-weight: 600;
+}
+
+.tg-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tg-search {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+}
+
+.tg-kind {
+  width: 180px;
+}
+
+.tg-chat,
+.tg-read {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tg-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.tg-name {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tg-time {
+  width: 110px;
+  flex-shrink: 0;
+}
+
+/* A switch: the checkbox stays for keyboard and screen readers, the track is drawn. */
+.tg-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.tg-switch input {
+  position: absolute;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.tg-switch input + span {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--color-border-strong);
+  transition: background 0.15s;
+}
+
+.tg-switch input + span::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-foreground);
+  transition: transform 0.15s;
+}
+
+.tg-switch input:checked + span {
+  background: var(--color-brand);
+}
+
+.tg-switch input:checked + span::after {
+  background: var(--color-on-accent);
+  transform: translateX(16px);
+}
+
+.tg-switch input:focus-visible + span {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+.tg-switch input:disabled + span {
+  opacity: 0.5;
+}
+
+.tg-switch-label {
+  width: 72px;
+  color: var(--color-muted-foreground);
+  font-size: 12px;
+}
+
+.tg-confirm {
+  padding: 12px;
+  border: 1px solid var(--color-destructive);
+  border-radius: var(--radius-md);
+}
+
+.tg-confirm p {
+  margin: 0;
+}
+
+.tg code {
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  background: var(--color-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 520px) {
+  .tg-time {
+    width: auto;
+  }
+
+  .tg-read {
+    flex-wrap: wrap;
+  }
+
+  .tg-switch-label {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tg-switch input + span,
+  .tg-switch input + span::after {
+    transition: none;
+  }
+}
