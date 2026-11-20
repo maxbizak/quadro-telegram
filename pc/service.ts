@@ -248,11 +248,26 @@ export class TelegramService {
     return { ok: true };
   }
 
+  /** Telegram refused the keys: the publisher's ones the person cannot check — they are told to sign in with their own. */
+  private async keysRefused(e: unknown): Promise<Error> {
+    const code = (e as { code?: unknown } | null)?.code;
+    const err = e instanceof Error ? e : new Error(String(e));
+    if (code !== 'API_ID_INVALID' && code !== 'API_ID_PUBLISHED_FLOOD') return err;
+    return (await this.d.store.secret())?.source === 'publisher'
+      ? new UserError('Ключи Quadro не подошли Telegram — войдите со своими ключами api_id и api_hash (ссылка ниже)', 'PUBLISHER_KEYS_REFUSED')
+      : err;
+  }
+
   async sendCode(x: unknown): Promise<LoginState> {
     const phone = String(obj(x).phone ?? '').replace(/[\s()-]/g, '');
     if (!/^\+\d{7,15}$/.test(phone)) throw new UserError('Номер телефона с плюсом и кодом страны, например +79991234567');
     const c = await this.connect();
-    const r = await c.sendCode(phone);
+    let r: LoginState;
+    try {
+      r = await c.sendCode(phone);
+    } catch (e) {
+      throw await this.keysRefused(e);
+    }
     this.loginStep = r.step;
     return r;
   }
@@ -339,9 +354,11 @@ export class TelegramService {
         this.qrState(flow, { step: 'done' });
         this.qr = null;
       },
-      (e: Error) => {
+      async (e: unknown) => {
         if (flow.abort.signal.aborted) return;
-        this.qrState(flow, { step: 'error', message: e.message });
+        const err = await this.keysRefused(e);
+        if (flow.abort.signal.aborted) return;
+        this.qrState(flow, { step: 'error', message: err.message });
         this.qr = null;
       },
     );

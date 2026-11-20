@@ -273,7 +273,7 @@ function LoginStep({ status, onDone, onChangeKeys }: { status: Status; onDone: (
     <section className="q-card q-stack">
       <div className="tg-step">
         <MessageCircle size={20} className="tg-accent" />
-        <h2>Шаг 2. Вход в Telegram</h2>
+        <h2>{status.keys === 'publisher' ? 'Вход в Telegram' : 'Шаг 2. Вход в Telegram'}</h2>
       </div>
       {step !== 'password' && (
         <div className="tg-methods" role="tablist" aria-label="Как войти">

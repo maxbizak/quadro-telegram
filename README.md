@@ -41,7 +41,10 @@ npm run typecheck
 - `test/probe-telegram.cjs` — экран целиком на заглушке части;
 - `test/probe-relay.cjs` — путь ИИ целиком: режим автора (часть из `dist/`), «ИИ может пользоваться», ключ с пакетом,
   MCP `tools/list` и `tools/call telegram_*` через Hub и мост до части на ПК (`--bridges --apps`, `QUADRO_DEV_PACKAGES`,
-  `QUADRO_PROBE_RELAY=1`).
+  `QUADRO_PROBE_RELAY=1`);
+- `test/probe-quadro-keys.cjs` — экран с ключами Quadro и без них (заглушка части);
+- `test/probe-publisher-dev.cjs` — настоящая часть в режиме автора с выдуманными `dist/publisher.dev.json`: экран без шага
+  ключей, Telegram отказывает выдуманным ключам, api_id издателя на экране нет. После проверки файл удалить.
 
 pc-sdk — как в документации автора: `npm i -D https://quadro-metaverse.site/pkg-sdk/v1/pc-sdk-0.1.0.tgz`.
 
@@ -59,7 +62,9 @@ npm run qhapp -- check "<эта папка>/out/quadro.telegram-1.0.0.qhapp" --p
   пакет публичный, а опубликованный api_hash Telegram ограничивает у всех (`API_ID_PUBLISHED_FLOOD`).
   - Манифест объявляет `publisherValues` `api_id` и `api_hash` (`for: ["pc"]`), значения задаёт издатель в Каталоге —
     они хранятся запечатанными и меняются без новой версии (ядро §12б).
-  - Программа берёт их перед стартом части и кладёт в `host.app.config.publisher` (`publisherKeysOf` в `pc/part.ts`).
+  - Программа берёт их перед стартом части и кладёт в `host.app.config.publisher` (`publisherKeysOf` в `pc/publisher.ts`).
+  - Telegram не принял ключи Quadro (`API_ID_INVALID`, `API_ID_PUBLISHED_FLOOD`) — экран говорит «Ключи Quadro не подошли» и
+    предлагает свои; у своих ключей — слова Telegram как есть.
   - Режим автора: `dist/publisher.dev.json` (`{ "api_id": "…", "api_hash": "…" }`) — только для проверки;
     `npm run check:dist` не даст упаковать dist/ с ним.
 - **Свои ключи** с my.telegram.org — запасной путь («Аккаунт → Дополнительно», ссылка на шаге входа); подсказки при «ERROR» и

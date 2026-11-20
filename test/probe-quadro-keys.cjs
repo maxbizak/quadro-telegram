@@ -78,14 +78,14 @@ module.exports = async (probe) => {
 
   // 2) Quadro keys: straight to the QR.
   await remount(true);
-  await has('Шаг 2. Вход в Telegram');
-  await lacks('Шаг 1');
+  await has('Вход в Telegram');
+  await lacks('Шаг ');
   await has('Войти со своими ключами api_id и api_hash');
   await click('Войти со своими ключами');
   await has('Свои ключи Telegram');
   await has('нужны, только если ключи Quadro не подходят');
   await click('Отмена');
-  await has('Шаг 2. Вход в Telegram');
+  await has('Вход в Telegram');
   await shot(`${OUT}/tg-quadro-keys-login.png`);
   await js('window.__signIn()');
   await has('Подключён: Тест Владелец');

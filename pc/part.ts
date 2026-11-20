@@ -2,6 +2,7 @@ import './env';
 import { connect, type PartHostApi } from '@quadrohub/pc-sdk';
 import { mtprotoFactory } from './mtproto';
 import { TelegramService } from './service';
+import { publisherKeysOf } from './publisher';
 import { Store } from './store';
 import type { TgFactory } from './types';
 
@@ -13,19 +14,9 @@ export const SCREEN_METHODS = ['status', 'setKeys', 'useQuadroKeys', 'sendCode',
 /** The AI's tools: manifest `mcp.tools[].handler` = `pc:<name>`. */
 export const AI_TOOLS = ['chats', 'messages', 'search', 'file'] as const;
 
-type Host = Pick<PartHostApi, 'app' | 'rpc' | 'lifecycle' | 'events'> & Partial<Pick<PartHostApi, 'mcp' | 'secrets' | 'net'>>;
+export { publisherKeysOf };
 
-/**
- * The publisher's keys («ключи Quadro»): the manifest's `publisherValues` api_id and api_hash — kept by the Catalog sealed, never
- * in the package; the program asks Hub for them before the part starts and puts them in `host.app.config.publisher`
- * (kernel §12б; in the author mode — publisher.dev.json of the package's folder). Absent or malformed — null: own keys.
- */
-export function publisherKeysOf(config: unknown): { apiId: number; apiHash: string } | null {
-  const v = (config as { publisher?: Record<string, unknown> } | null)?.publisher;
-  const apiId = Number(String(v?.api_id ?? '').trim());
-  const apiHash = String(v?.api_hash ?? '').trim().toLowerCase();
-  return Number.isInteger(apiId) && apiId > 0 && apiId < 2 ** 31 && /^[0-9a-f]{32}$/.test(apiHash) ? { apiId, apiHash } : null;
-}
+type Host = Pick<PartHostApi, 'app' | 'rpc' | 'lifecycle' | 'events'> & Partial<Pick<PartHostApi, 'mcp' | 'secrets' | 'net'>>;
 
 /** `sealer` — Windows' sealing if this program has it (by default the host's, if any). */
 export function serveTelegram(host: Host, factory?: TgFactory, sealer: Host['secrets'] | null = host.secrets ?? null): TelegramService {

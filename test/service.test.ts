@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { LIMITS, TelegramService, type ApiKeys } from '../pc/service';
-import { publisherKeysOf } from '../pc/part';
+import { publisherKeysOf } from '../pc/publisher';
 import { Store } from '../pc/store';
+import type { TgFactory } from '../pc/types';
 import { fakeSealer, msg, stubFactory, stubWorld, type StubChat } from './stub-tg';
 
 const NOW = Date.parse('2026-11-20T12:00:00Z');
@@ -155,6 +156,25 @@ describe('keys: Quadro’s (the publisher’s) or the person’s own', () => {
     await s.service.setKeys({ apiId: '123456', apiHash: '0123456789abcdef0123456789abcdef' });
     await s.service.logout({ keys: true });
     expect(await s.service.status()).toMatchObject({ keys: 'publisher', configured: true });
+  });
+
+  it('Telegram refuses Quadro’s keys: the person is told to sign in with their own (own keys keep Telegram’s words)', async () => {
+    const refused = () => Object.assign(new Error('Неверные api_id или api_hash — проверьте их на my.telegram.org'), { code: 'API_ID_INVALID' });
+    const stub = stubFactory();
+    const refusing: TgFactory = async (o) => ({
+      ...(await stub.factory(o)),
+      sendCode: async () => {
+        throw refused();
+      },
+      qrLogin: async () => {
+        throw refused();
+      },
+    });
+    const service = new TelegramService({ store: new Store(dir, fakeSealer), factory: refusing, now: () => NOW, publisherKeys: () => QUADRO });
+    await expect(service.sendCode({ phone: '+79991234567' })).rejects.toMatchObject({ code: 'PUBLISHER_KEYS_REFUSED', message: expect.stringMatching(/^Ключи Quadro не подошли Telegram/) });
+    await expect(service.qrStart()).rejects.toThrow(/^Ключи Quadro не подошли Telegram — войдите со своими ключами/);
+    await service.setKeys({ apiId: '123456', apiHash: '0123456789abcdef0123456789abcdef' });
+    await expect(service.sendCode({ phone: '+79991234567' })).rejects.toThrow(/проверьте их на my\.telegram\.org/);
   });
 
   it('without Quadro’s keys: own keys first, «ключи Quadro» says there are none yet', async () => {
