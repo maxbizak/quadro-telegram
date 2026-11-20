@@ -1,6 +1,7 @@
 import { extname } from 'node:path';
 import type { AllowedChat, JournalEntry, Store } from './store';
 import type { Downloaded, LoginState, Me, TgApi, TgChat, TgFactory, TgMessage } from './types';
+import { worksData } from './works';
 import { docxText } from './zip-text';
 
 // «Telegram»'s part on the PC: the person signs in on its screen; the AI reads only the chats the person allowed, page by page,
@@ -510,41 +511,55 @@ export class TelegramService {
   }
 
   async aiSearch(x: unknown, signal?: AbortSignal): Promise<McpAnswer> {
-    return this.aiCall('search', async () => {
-      const p = obj(x);
-      const query = String(p.query ?? '').trim();
-      if (!query) throw new UserError('query — что искать');
-      if (query.length > 200) throw new UserError('query — до 200 знаков');
-      const chats = p.chat != null && p.chat !== '' ? [this.allowedChat(p.chat)] : this.d.store.allowed();
-      if (!chats.length) throw new UserError('Владелец ещё не разрешил ИИ ни одного чата', 'NOT_ALLOWED');
-      const fromMs = parseTime(p.from, 'from', false, this.d.offsetMin) ?? undefined;
-      const toMs = parseTime(p.to, 'to', true, this.d.offsetMin) ?? undefined;
-      const limit = Math.min(LIMITS.searchMax, Math.max(1, Number(p.limit ?? 50) || 50));
-      const c = await this.signedIn();
-      const blocks: string[] = [];
-      let found = 0;
-      let used = 0;
-      for (const chat of chats) {
-        if (signal?.aborted) throw new UserError('ИИ отменил вызов', 'ABORTED');
-        if (found >= limit || used > LIMITS.answerChars) break;
-        const list = await c.search(chat.peer, query, { limit: Math.min(LIMITS.searchPerChat, limit - found), ...(fromMs ? { fromMs } : {}), ...(toMs ? { toMs } : {}) });
-        if (!list.length) continue;
-        const lines = [];
-        for (const m of list) {
-          const line = formatMessage(m, this.d.offsetMin);
-          if (used + line.length > LIMITS.answerChars) break;
-          lines.push(line);
-          used += line.length + 1;
-          found++;
-        }
-        blocks.push(`Чат «${chat.title}» (chat=${chat.id}) — ${lines.length}:\n${lines.join('\n')}`);
+    return this.aiCall('search', () => this.searchAnswer(x, signal));
+  }
+
+  /**
+   * The same search asked by the person on the screen «Работы и оплата» in Hub (quadro.tools.call → the part's method «search»):
+   * the same chats and answer, but it is not the AI — no line in «Что читал ИИ», no notice.
+   */
+  async personSearch(x: unknown): Promise<McpAnswer> {
+    const { answer } = await this.searchAnswer(x);
+    return { text: answer.text, data: answer.data };
+  }
+
+  private async searchAnswer(x: unknown, signal?: AbortSignal): Promise<{ answer: McpAnswer; entry: Omit<JournalEntry, 'at' | 'tool' | 'bytes'> }> {
+    const p = obj(x);
+    const query = String(p.query ?? '').trim();
+    if (!query) throw new UserError('query — что искать');
+    if (query.length > 200) throw new UserError('query — до 200 знаков');
+    const chats = p.chat != null && p.chat !== '' ? [this.allowedChat(p.chat)] : this.d.store.allowed();
+    if (!chats.length) throw new UserError('Владелец ещё не разрешил ИИ ни одного чата', 'NOT_ALLOWED');
+    const fromMs = parseTime(p.from, 'from', false, this.d.offsetMin) ?? undefined;
+    const toMs = parseTime(p.to, 'to', true, this.d.offsetMin) ?? undefined;
+    const limit = Math.min(LIMITS.searchMax, Math.max(1, Number(p.limit ?? 50) || 50));
+    const c = await this.signedIn();
+    const blocks: string[] = [];
+    const rows: Array<{ chat: AllowedChat; m: TgMessage }> = [];
+    let found = 0;
+    let used = 0;
+    for (const chat of chats) {
+      if (signal?.aborted) throw new UserError('ИИ отменил вызов', 'ABORTED');
+      if (found >= limit || used > LIMITS.answerChars) break;
+      const list = await c.search(chat.peer, query, { limit: Math.min(LIMITS.searchPerChat, limit - found), ...(fromMs ? { fromMs } : {}), ...(toMs ? { toMs } : {}) });
+      if (!list.length) continue;
+      const lines = [];
+      for (const m of list) {
+        const line = formatMessage(m, this.d.offsetMin);
+        if (used + line.length > LIMITS.answerChars) break;
+        lines.push(line);
+        rows.push({ chat, m });
+        used += line.length + 1;
+        found++;
       }
-      const text = found ? [`Поиск «${query}»: ${found} сообщ. (новые первыми)`, '', ...blocks].join('\n\n') : `Поиск «${query}»: ничего не найдено в разрешённых чатах.`;
-      return {
-        answer: { text, data: { query, count: found }, notice: `ИИ искал «${query.slice(0, 40)}» в ${chats.length === 1 ? `чате «${chats[0]!.title}»` : `${chats.length} чатах`}` },
-        entry: { chats: chats.map((ch) => ch.title), messages: found, files: 0, query },
-      };
-    });
+      blocks.push(`Чат «${chat.title}» (chat=${chat.id}) — ${lines.length}:\n${lines.join('\n')}`);
+    }
+    const text = found ? [`Поиск «${query}»: ${found} сообщ. (новые первыми)`, '', ...blocks].join('\n\n') : `Поиск «${query}»: ничего не найдено в разрешённых чатах.`;
+    return {
+      // data — the screen «Работы и оплата» (structuredContent): each message with its sum, «оплачено?» and address in Telegram.
+      answer: { text, data: worksData(query, rows), notice: `ИИ искал «${query.slice(0, 40)}» в ${chats.length === 1 ? `чате «${chats[0]!.title}»` : `${chats.length} чатах`}` },
+      entry: { chats: chats.map((ch) => ch.title), messages: found, files: 0, query },
+    };
   }
 
   async aiFile(x: unknown, signal?: AbortSignal): Promise<McpAnswer> {

@@ -96,6 +96,8 @@ describe('the built part of «Telegram»', () => {
     await expect(rpc.call('$mcp', { callId: 'c3', method: 'sendCode', params: { phone: '+79990000000' } })).rejects.toThrow(/Нет такого инструмента/);
     await expect(rpc.call('$mcp', { callId: 'c4', method: 'logout', params: {} })).rejects.toThrow(/Нет такого инструмента/);
     await expect(rpc.call('messages', { chat: 'Мама' })).rejects.toThrow(/Нет такого действия/);
+    // The screen «Работы и оплата» in Hub searches as the person: the same allowed chats, no line in «Что читал ИИ».
+    await expect(rpc.call('search', { query: 'оплат' })).rejects.toThrow(/не разрешил/);
     const journal = (await rpc.call('journal', {})) as Array<{ tool: string; error?: string }>;
     expect(journal.map((j) => j.tool)).toEqual(['messages', 'chats']);
   });

@@ -331,6 +331,25 @@ describe('«Что читал ИИ»', () => {
     expect(s.service.journal({})).toEqual([]);
   });
 
+  it('the search gives the screen «Работы и оплата» its list; the person searching there is not the AI', async () => {
+    const s = await signedIn();
+    await allow(s, '-1001234', '555');
+    const ai = await s.service.aiSearch({ query: 'опла', from: '2026-10-01' });
+    const data = ai.data as { query: string; count: number; shown: number; items: Array<Record<string, unknown>> };
+    expect(data).toMatchObject({ query: 'опла', count: 2, shown: 2 });
+    expect(data.items.map((w) => [w.chat, w.paid, !!w.link])).toEqual(
+      expect.arrayContaining([
+        ['Иван Петров', 'no', true],
+        ['UGC работа', 'yes', true],
+      ]),
+    );
+    expect(s.service.journal({})).toHaveLength(1);
+    const person = await s.service.personSearch({ query: 'опла', from: '2026-10-01' });
+    expect(person).toEqual({ text: ai.text, data: ai.data });
+    expect(s.service.journal({})).toHaveLength(1);
+    await expect(s.service.personSearch({ query: 'опла', chat: 'Мама' })).rejects.toThrow(/не разрешён/);
+  });
+
   it('read-only: no call of the client writes anything to Telegram', async () => {
     const s = await signedIn();
     await allow(s, '-1001234', '555');

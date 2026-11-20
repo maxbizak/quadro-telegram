@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Работы и оплата</title>
+    <!-- The screen of telegram_search (surface «mcp-app», kernel §12е): one file — in an AI's chat Hub puts the bridge in itself,
+         in Hub these two come from Hub. Its data: quadro.context.tool / the event «tool.result» (structuredContent), or
+         quadro.tools.call('search') when the person searches here. -->
+    <link rel="stylesheet" href="/pkg-sdk/v1/quadro-ui.css" />
+    <script src="/pkg-sdk/v1/quadro.js"></script>
+    <style>
+      body { padding: 14px 16px 16px; }
+      .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+      .head h1 { margin: 0; font-size: 16px; }
+      .bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+      .bar .q-input { flex: 2 1 200px; min-width: 0; }
+      .bar .q-select { flex: 1 1 160px; min-width: 0; }
+      .words, .filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+      .chip { font: inherit; font-size: 12px; line-height: 1; padding: 6px 10px; border-radius: 999px; cursor: pointer;
+        background: transparent; color: var(--color-muted-foreground); border: 1px solid var(--color-border); }
+      .chip:hover { color: var(--color-foreground); border-color: var(--color-border-strong); }
+      .chip[aria-pressed='true'] { color: var(--color-brand-text); border-color: var(--color-brand); background: var(--color-brand-soft); }
+      .chip b { font-weight: 600; margin-left: 4px; }
+      .state { padding: 18px 14px; border: 1px dashed var(--color-border); border-radius: var(--radius-lg); color: var(--color-muted-foreground); text-align: center; }
+      .state.error { color: var(--color-destructive-text); border-color: color-mix(in srgb, var(--color-destructive) 45%, transparent); }
+      .table { border: 1px solid var(--color-border); border-radius: var(--radius-lg); overflow: hidden; }
+      .row { display: grid; grid-template-columns: minmax(110px, 1.1fr) minmax(90px, 0.9fr) minmax(180px, 2.6fr) minmax(76px, 0.8fr) 104px 148px;
+        gap: 12px; align-items: start; padding: 10px 12px; border-top: 1px solid var(--color-border); }
+      .row:first-child { border-top: 0; }
+      .row.th { background: var(--color-elevated); color: var(--color-subtle); font-size: 12px; padding-top: 8px; padding-bottom: 8px; }
+      .cell { min-width: 0; overflow-wrap: anywhere; }
+      .chat { font-weight: 500; }
+      .sub { display: block; color: var(--color-subtle); font-size: 12px; }
+      .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: var(--color-foreground); }
+      .row.wide .text { -webkit-line-clamp: unset; }
+      .text mark { background: var(--color-brand-soft); color: var(--color-brand-text); border-radius: 3px; padding: 0 2px; }
+      .amount { font-variant-numeric: tabular-nums; font-weight: 500; }
+      .none { color: var(--color-subtle); }
+      .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 999px;
+        border: 1px solid var(--color-border); color: var(--color-subtle); white-space: nowrap; }
+      .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+      .badge.yes { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 40%, transparent); }
+      .badge.no { color: var(--color-destructive-text); border-color: color-mix(in srgb, var(--color-destructive) 45%, transparent); }
+      .open { font-size: 12px; padding: 6px 10px; white-space: nowrap; width: 100%; }
+      .open:disabled { opacity: 0.55; cursor: default; }
+      .foot { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-top: 10px; }
+      .foot .q-subtle { margin: 0; }
+      [hidden] { display: none !important; }
+      /* A narrow chat: each message as a card. */
+      @media (max-width: 720px) {
+        .row.th { display: none; }
+        .row { grid-template-columns: 1fr auto; gap: 6px 10px; }
+        .cell.c-chat { grid-column: 1; }
+        .cell.c-paid { grid-column: 2; grid-row: 1; justify-self: end; }
+        .cell.c-who, .cell.c-text { grid-column: 1 / -1; }
+        .cell.c-amount { grid-column: 1; align-self: center; }
+        .cell.c-open { grid-column: 2; }
+        .cell.c-who::before { content: 'Кто: '; color: var(--color-subtle); }
+        .cell.c-amount::before { content: 'Сумма: '; color: var(--color-subtle); font-weight: 400; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="head">
+      <h1>Работы и оплата</h1>
+      <span class="q-subtle" id="sub">Telegram · только чтение</span>
+    </div>
+
+    <form class="bar" id="find" autocomplete="off">
+      <input class="q-input" id="q" name="q" maxlength="200" placeholder="Что искать: оплат, скинул, ₽, robux…" aria-label="Что искать" />
+      <select class="q-select" id="chat" aria-label="Чат">
+        <option value="">Все разрешённые чаты</option>
+      </select>
+      <button class="q-btn q-btn-primary" id="go" type="submit">Найти</button>
+    </form>
+    <div class="words" id="words" aria-label="Быстрый поиск"></div>
+
+    <div class="filters" id="filters" role="group" aria-label="Показать" hidden></div>
+    <div class="state" id="state">Скажите ИИ, что найти, или ищите здесь: например, «оплат» или «скинул».</div>
+    <div class="table" id="table" role="table" aria-label="Сообщения о работе и оплате" hidden></div>
+
+    <div class="foot" id="foot" hidden>
+      <p class="q-subtle">«Оплачено?» — по словам сообщения или ответа на него, это подсказка. Откройте сообщение, чтобы проверить.</p>
+      <button class="q-btn" id="ask" type="button" hidden>Попросить ИИ проверить неоплаченные</button>
+    </div>
+
+    <script>
+      (function () {
+        'use strict';
+        var WORDS = ['оплат', 'скинул', 'перевёл', '₽', '$', 'robux', 'готово', 'заказ'];
+        var PAID = { yes: 'Оплачено', no: 'Не оплачено', unknown: 'Неясно' };
+        var FILTERS = [
+          ['all', 'Все'],
+          ['no', 'Не оплачено'],
+          ['yes', 'Оплачено'],
+          ['unknown', 'Неясно'],
+        ];
+        var st = { data: null, filter: 'all', busy: false, chatsAsked: false, inChat: false };
+        var $ = function (id) {
+          return document.getElementById(id);
+        };
+
+        function el(tag, cls, text) {
+          var e = document.createElement(tag);
+          if (cls) e.className = cls;
+          if (text !== undefined && text !== null) e.textContent = String(text);
+          return e;
+        }
+        function paidKey(w) {
+          return w.paid === 'yes' || w.paid === 'no' ? w.paid : 'unknown';
+        }
+        function when(iso) {
+          var d = new Date(iso);
+          if (isNaN(d.getTime())) return '';
+          return d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric', hour: '2-digit', minute: '2-digit' });
+        }
+        function isWorks(d) {
+          return !!d && typeof d === 'object' && Array.isArray(d.items);
+        }
+        function textOf(result) {
+          return ((result && result.content) || [])
+            .filter(function (c) {
+              return c && c.type === 'text';
+            })
+            .map(function (c) {
+              return c.text;
+            })
+            .join('\n');
+        }
+
+        function setState(text, error) {
+          var s = $('state');
+          s.hidden = !text;
+          s.textContent = text || '';
+          s.className = error ? 'state error' : 'state';
+          if (text) {
+            $('table').hidden = true;
+            $('filters').hidden = true;
+            $('foot').hidden = true;
+          }
+        }
+
+        /** The message's text with the found word and the sums marked (text nodes only — never HTML of the chat). */
+        function marked(text, query, amount) {
+          var box = el('span', 'text');
+          var needles = [];
+          if (query && query.length > 1) needles.push(query);
+          (amount || '').split(', ').forEach(function (a) {
+            if (a) needles.push(a);
+          });
+          if (!needles.length) {
+            box.textContent = text;
+            return box;
+          }
+          var low = text.toLowerCase();
+          var at = 0;
+          while (at < text.length) {
+            var best = -1;
+            var len = 0;
+            needles.forEach(function (n) {
+              var i = low.indexOf(n.toLowerCase(), at);
+              if (i !== -1 && (best === -1 || i < best)) {
+                best = i;
+                len = n.length;
+              }
+            });
+            if (best === -1) {
+              box.appendChild(document.createTextNode(text.slice(at)));
+              break;
+            }
+            if (best > at) box.appendChild(document.createTextNode(text.slice(at, best)));
+            box.appendChild(el('mark', null, text.slice(best, best + len)));
+            at = best + len;
+          }
+          return box;
+        }
+
+        function open(w) {
+          if (!w.link) return;
+          quadro.ui.openExternal(w.link).catch(function (e) {
+            setTimeout(function () {
+              alertLine('Не открылось: ' + ((e && e.message) || 'ошибка'));
+            });
+          });
+        }
+        function alertLine(text) {
+          $('sub').textContent = text;
+        }
+
+        function row(w, query) {
+          var r = el('div', 'row');
+          r.setAttribute('role', 'row');
+          var chat = el('div', 'cell c-chat');
+          chat.appendChild(el('span', 'chat', w.chat));
+          chat.appendChild(el('span', 'sub', when(w.date) + ' · #' + w.id));
+          var who = el('div', 'cell c-who', w.who);
+          if (w.username) who.title = '@' + w.username;
+          var text = el('div', 'cell c-text');
+          text.appendChild(marked(w.text || '', query, w.amount));
+          text.title = 'Нажмите, чтобы показать целиком';
+          text.addEventListener('click', function () {
+            r.classList.toggle('wide');
+          });
+          var amount = el('div', 'cell c-amount');
+          amount.appendChild(w.amount ? el('span', 'amount', w.amount) : el('span', 'none', '—'));
+          var paid = el('div', 'cell c-paid');
+          var key = paidKey(w);
+          var badge = el('span', 'badge ' + key, PAID[key]);
+          paid.appendChild(badge);
+          if (w.paidBy) {
+            badge.title = 'Ответ #' + w.paidBy + ' говорит, что оплачено';
+            paid.appendChild(el('span', 'sub', 'ответ #' + w.paidBy));
+          }
+          var cell = el('div', 'cell c-open');
+          var b = el('button', 'q-btn open', w.link ? (w.exact ? 'Открыть в Telegram' : 'Открыть чат') : 'Нет ссылки');
+          b.type = 'button';
+          if (!w.link) {
+            b.disabled = true;
+            b.title = 'Telegram не даёт ссылок на сообщения этого чата — найдите его по дате и номеру #' + w.id;
+          } else b.title = w.exact ? 'Сообщение #' + w.id + ' в Telegram' : 'Чат в Telegram (на сообщения личных чатов Telegram ссылок не даёт)';
+          b.addEventListener('click', function () {
+            open(w);
+          });
+          cell.appendChild(b);
+          [chat, who, text, amount, paid, cell].forEach(function (c) {
+            c.setAttribute('role', 'cell');
+            r.appendChild(c);
+          });
+          return r;
+        }
+
+        function render() {
+          var d = st.data;
+          if (!isWorks(d)) return;
+          // An answer «оплатил» that marked a found work is shown in that work's row («ответ #…»), not as a row of its own.
+          var answers = {};
+          d.items.forEach(function (w) {
+            if (w.paidBy) answers[w.chatId + '#' + w.paidBy] = true;
+          });
+          var items = d.items
+            .filter(function (w) {
+              return !answers[w.chatId + '#' + w.id];
+            })
+            .sort(function (a, b) {
+              return String(b.date).localeCompare(String(a.date));
+            });
+          var count = { all: items.length, yes: 0, no: 0, unknown: 0 };
+          items.forEach(function (w) {
+            count[paidKey(w)]++;
+          });
+          var sub = 'Поиск «' + d.query + '» · ' + d.count + ' сообщ.';
+          if (d.shown < d.count) sub += ' · показаны ' + d.shown + ' (остальные ИИ видит текстом)';
+          $('sub').textContent = sub;
+          if (!items.length) {
+            setState('Ничего не нашлось по «' + d.query + '» в разрешённых чатах. Попробуйте другие слова — кнопки выше.');
+            return;
+          }
+          if (st.filter !== 'all' && !count[st.filter]) st.filter = 'all';
+          setState('');
+          var f = $('filters');
+          f.textContent = '';
+          f.hidden = false;
+          FILTERS.forEach(function (x) {
+            if (x[0] !== 'all' && !count[x[0]]) return;
+            var c = el('button', 'chip', x[1]);
+            c.type = 'button';
+            c.appendChild(el('b', null, count[x[0]]));
+            c.setAttribute('aria-pressed', String(st.filter === x[0]));
+            c.addEventListener('click', function () {
+              st.filter = x[0];
+              render();
+            });
+            f.appendChild(c);
+          });
+          var t = $('table');
+          t.textContent = '';
+          var th = el('div', 'row th');
+          th.setAttribute('role', 'row');
+          ['Чат', 'Кто', 'Что за работа', 'Сумма', 'Оплачено?', ''].forEach(function (h) {
+            var c = el('div', 'cell', h);
+            c.setAttribute('role', 'columnheader');
+            th.appendChild(c);
+          });
+          t.appendChild(th);
+          items
+            .filter(function (w) {
+              return st.filter === 'all' || paidKey(w) === st.filter;
+            })
+            .forEach(function (w) {
+              t.appendChild(row(w, d.query));
+            });
+          t.hidden = false;
+          $('foot').hidden = false;
+          $('ask').hidden = !st.inChat || !(count.no + count.unknown);
+        }
+
+        function show(data) {
+          st.data = data;
+          if (data && data.query) $('q').value = data.query;
+          render();
+        }
+
+        function search(query, chat) {
+          query = String(query || '').trim();
+          if (!query || st.busy) return;
+          st.busy = true;
+          $('go').disabled = true;
+          setState('Ищу «' + query + '»…');
+          var args = { query: query };
+          if (chat) args.chat = chat;
+          quadro.tools
+            .call('search', args)
+            .then(function (r) {
+              var d = r && r.structuredContent;
+              if (isWorks(d)) show(d);
+              else setState(textOf(r) || 'Поиск ответил без таблицы', true);
+            })
+            .catch(function (e) {
+              setState(explain(e), true);
+            })
+            .then(function () {
+              st.busy = false;
+              $('go').disabled = false;
+            });
+        }
+
+        function explain(e) {
+          var code = e && e.code;
+          if (code === 'NOT_IN_PROGRAM') return 'Поиск по Telegram работает в программе Quadro Hub на ПК, где вы вошли в Telegram.';
+          return (e && e.message) || 'Не получилось';
+        }
+
+        /** The allowed chats for the list — asked once, when the person opens it: in the AI's chat its tool, in Hub its part. */
+        function askChats() {
+          if (st.chatsAsked) return;
+          st.chatsAsked = true;
+          var asked = st.inChat
+            ? quadro.tools.call('chats', {}).then(function (r) {
+                return (r && r.structuredContent && r.structuredContent.chats) || [];
+              })
+            : quadro.pc.call('access', {});
+          asked
+            .then(function (list) {
+              list = Array.isArray(list) ? list : [];
+              var sel = $('chat');
+              list.forEach(function (c) {
+                var o = el('option', null, c.title);
+                o.value = c.id;
+                sel.appendChild(o);
+              });
+            })
+            .catch(function () {
+              st.chatsAsked = false;
+            });
+        }
+
+        /** In an AI's chat: the person asks the AI to check the payment of the rows not marked «оплачено». */
+        function askAi() {
+          var d = st.data;
+          if (!isWorks(d)) return;
+          var rows = d.items.filter(function (w) {
+            return w.paid !== 'yes';
+          });
+          var lines = rows.slice(0, 20).map(function (w) {
+            return '- «' + w.chat + '» #' + w.id + ' (' + w.who + ', ' + when(w.date) + ')' + (w.amount ? ': ' + w.amount : '') + ' — «' + (w.text || '').slice(0, 80) + '»';
+          });
+          var text = 'Проверь по переписке вокруг этих сообщений Telegram, оплачены ли работы, и назови неоплаченные:\n' + lines.join('\n');
+          if (rows.length > 20) text += '\n…и ещё ' + (rows.length - 20);
+          quadro.ai.send(text).catch(function (e) {
+            alertLine(explain(e));
+          });
+        }
+
+        WORDS.forEach(function (w) {
+          var c = el('button', 'chip', w);
+          c.type = 'button';
+          c.addEventListener('click', function () {
+            $('q').value = w;
+            search(w, $('chat').value);
+          });
+          $('words').appendChild(c);
+        });
+        $('find').addEventListener('submit', function (e) {
+          e.preventDefault();
+          search($('q').value, $('chat').value);
+        });
+        $('chat').addEventListener('focus', askChats);
+        $('chat').addEventListener('pointerdown', askChats);
+        $('ask').addEventListener('click', askAi);
+
+        quadro.on('tool.input', function (e) {
+          var a = e && e.arguments;
+          if (a && a.query) $('q').value = a.query;
+          if (!st.data) setState('ИИ ищет' + (a && a.query ? ' «' + a.query + '»' : '') + '…');
+        });
+        quadro.on('tool.result', function (r) {
+          var d = r && r.structuredContent;
+          if (isWorks(d)) show(d);
+          else if (r && r.isError) setState(textOf(r) || 'Поиск не удался', true);
+        });
+        quadro.on('tool.cancelled', function () {
+          if (!st.data) setState('ИИ отменил поиск.');
+        });
+
+        quadro.ready.then(function (ctx) {
+          st.inChat = !!ctx && ctx.host === 'mcp';
+          var t = ctx && ctx.tool;
+          var a = t && t.input;
+          if (a && a.query) $('q').value = a.query;
+          if (t && t.result && isWorks(t.result.structuredContent)) show(t.result.structuredContent);
+          else if (!st.inChat && ctx && ctx.pc === false) setState('Поиск по Telegram работает в программе Quadro Hub на ПК, где вы вошли в Telegram.');
+        });
+      })();
+    </script>
+  </body>
+</html>

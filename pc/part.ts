@@ -10,7 +10,7 @@ import type { TgFactory } from './types';
 // chooses chats (host.rpc.handle — only its screen calls these); the AI reads through Hub's MCP (host.mcp.handle — only the AI
 // calls these, and they never sign in, never see the phone, code or password, and read only the allowed chats).
 
-export const SCREEN_METHODS = ['status', 'setKeys', 'useQuadroKeys', 'sendCode', 'signIn', 'password', 'qrStart', 'qrCancel', 'logout', 'chats', 'setAccess', 'access', 'journal', 'clearJournal'] as const;
+export const SCREEN_METHODS = ['status', 'setKeys', 'useQuadroKeys', 'sendCode', 'signIn', 'password', 'qrStart', 'qrCancel', 'logout', 'chats', 'setAccess', 'access', 'journal', 'clearJournal', 'search'] as const;
 /** The AI's tools: manifest `mcp.tools[].handler` = `pc:<name>`. */
 export const AI_TOOLS = ['chats', 'messages', 'search', 'file'] as const;
 
@@ -50,6 +50,8 @@ export function serveTelegram(host: Host, factory?: TgFactory, sealer: Host['sec
   host.rpc.handle('access', () => service.access());
   host.rpc.handle('journal', (x) => service.journal(obj(x)));
   host.rpc.handle('clearJournal', () => service.clearJournal());
+  // The screen «Работы и оплата» in Hub: quadro.tools.call('search') comes here (the person searches, not the AI).
+  host.rpc.handle('search', (x) => service.personSearch(x));
   if (host.mcp) {
     host.mcp.handle('chats', () => service.aiChats());
     host.mcp.handle('messages', (x, ctx) => service.aiMessages(x, ctx?.signal));

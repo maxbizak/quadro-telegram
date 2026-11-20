@@ -50,10 +50,13 @@ module.exports = async (probe) => {
     js(`(async () => { const csrf = decodeURIComponent((document.cookie.match(/qh_csrf=([^;]+)/) || [])[1] || ''); const r = await fetch('/api${path}', { method: ${JSON.stringify(method)}, headers: { 'content-type': 'application/json', 'x-csrf-token': csrf }, ${body ? `body: ${JSON.stringify(JSON.stringify(body))},` : ''} credentials: 'include' }); const t = await r.text(); return { status: r.status, body: t ? JSON.parse(t) : null }; })()`);
   let rpcId = 0;
   /** As the AI: MCP over the key. */
+  let session = null; // Mcp-Session-Id of a client that shows tool screens (MCP Apps)
   const mcp = async (token, method, params) => {
-    const r = await fetch(`${API}/api/mcp`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }) });
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(session ? { 'mcp-session-id': session } : {}) };
+    const r = await fetch(`${API}/api/mcp`, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }) });
     const t = await r.text();
     if (!r.ok) throw new Error(`MCP ${method}: ${r.status} ${t.slice(0, 300)}`);
+    if (method === 'initialize') session = r.headers.get('mcp-session-id') || session;
     return JSON.parse(t);
   };
 
@@ -91,6 +94,31 @@ module.exports = async (probe) => {
   log('CALL messages(Мама)', JSON.stringify(denied.result ?? denied.error).slice(0, 400));
   const notSigned = await mcp(token, 'tools/call', { name: 'telegram_search', arguments: { query: 'оплата' } });
   log('CALL search', JSON.stringify(notSigned.result ?? notSigned.error).slice(0, 400));
+
+  // 3б) An AI's chat that shows tool screens (MCP Apps, kernel §12е): telegram_search carries its screen «Работы и оплата»
+  //     (ui://…), the screen is one HTML with Hub's bridge put in, the package's mcp.instructions come with initialize.
+  const init = await mcp(token, 'initialize', { protocolVersion: '2025-06-18', capabilities: { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } }, clientInfo: { name: 'probe-ui', version: '1' } });
+  const said = String(init.result?.instructions || '');
+  log('UI-INIT', session ? 'Mcp-Session-Id есть' : 'без Mcp-Session-Id', JSON.stringify(said.slice(said.indexOf('Telegram'), said.indexOf('Telegram') + 120)));
+  if (!said.includes('Работы и оплата')) throw new Error('в instructions нет строки пакета Telegram');
+  const uiList = await mcp(token, 'tools/list', {});
+  const search = uiList.result.tools.find((t) => t.name === 'telegram_search');
+  const uri = search?._meta?.ui?.resourceUri;
+  log('UI-TOOL', JSON.stringify(search?._meta));
+  if (!uri || !/^ui:\/\//.test(uri)) throw new Error('у telegram_search нет экрана');
+  if (uiList.result.tools.find((t) => t.name === 'telegram_messages')?._meta?.ui) throw new Error('экран у инструмента, которому его не давали');
+  const page = await mcp(token, 'resources/read', { uri });
+  const content = page.result?.contents?.[0] || {};
+  log('UI-PAGE', content.uri, content.mimeType, String(content.text || '').length, 'знаков');
+  if (content.mimeType !== 'text/html;profile=mcp-app') throw new Error('экран не text/html;profile=mcp-app: ' + JSON.stringify(page).slice(0, 300));
+  for (const need of ['window.__quadroMcp', '"toolPrefix":"telegram_"', 'Работы и оплата', 'quadro.tools'])
+    if (!String(content.text).includes(need)) throw new Error('в странице экрана нет ' + need);
+  // Tags only (the bridge Hub put in mentions «<script src=…quadro.js>» in its own comment): no script is loaded by address.
+  const tags = String(content.text).replace(/(<script\b[^>]*>)[\s\S]*?<\/script\s*>/gi, '$1</script>').match(/<script\b[^>]*>/gi) || [];
+  if (tags.some((t) => /\bsrc\s*=/i.test(t))) throw new Error('в странице экрана остался script src: ' + tags.join(' '));
+  const resources = await mcp(token, 'resources/list', {});
+  log('UI-RESOURCES', JSON.stringify((resources.result?.resources || []).filter((r) => r.uri === uri).map((r) => r.name)));
+  session = null;
 
   // 4) The person's screen: «Что читал ИИ» — the reads arrived by themselves. (Signed out: the journal is on the «Аккаунт»-less
   //    login step, so it is read straight from the part.)
