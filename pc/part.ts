@@ -16,15 +16,15 @@ export const AI_TOOLS = ['chats', 'messages', 'search', 'file'] as const;
 type Host = Pick<PartHostApi, 'app' | 'rpc' | 'lifecycle' | 'events'> & Partial<Pick<PartHostApi, 'mcp' | 'secrets' | 'net'>>;
 
 /**
- * The publisher's keys («ключи Quadro»), as the platform hands them to the part — proposed contract: the part's
- * `host.app.config.publisher.telegram = { apiId, apiHash }`, filled by the program from the publisher's values of the package
- * (not in the package itself). Absent — null: the person uses their own keys.
+ * The publisher's keys («ключи Quadro»): the manifest's `publisherValues` api_id and api_hash — kept by the Catalog sealed, never
+ * in the package; the program asks Hub for them before the part starts and puts them in `host.app.config.publisher`
+ * (kernel §12б; in the author mode — publisher.dev.json of the package's folder). Absent or malformed — null: own keys.
  */
 export function publisherKeysOf(config: unknown): { apiId: number; apiHash: string } | null {
-  const t = (config as { publisher?: { telegram?: { apiId?: unknown; apiHash?: unknown } } } | null)?.publisher?.telegram;
-  const apiId = Number(t?.apiId);
-  const apiHash = String(t?.apiHash ?? '').toLowerCase();
-  return Number.isInteger(apiId) && apiId > 0 && /^[0-9a-f]{32}$/.test(apiHash) ? { apiId, apiHash } : null;
+  const v = (config as { publisher?: Record<string, unknown> } | null)?.publisher;
+  const apiId = Number(String(v?.api_id ?? '').trim());
+  const apiHash = String(v?.api_hash ?? '').trim().toLowerCase();
+  return Number.isInteger(apiId) && apiId > 0 && apiId < 2 ** 31 && /^[0-9a-f]{32}$/.test(apiHash) ? { apiId, apiHash } : null;
 }
 
 /** `sealer` — Windows' sealing if this program has it (by default the host's, if any). */

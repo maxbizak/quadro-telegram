@@ -1,7 +1,7 @@
 {
   "name": "quadro-telegram",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "«Telegram» — пакет Quadro Hub (quadro.telegram): ИИ владельца читает выбранные им чаты Telegram; клиент MTProto на ПК",
   "type": "module",
   "scripts": {
@@ -9,6 +9,7 @@
     "build:client": "vite build",
     "build:no-mcp": "node scripts/build.mjs --no-mcp",
     "build:pc": "node scripts/build-pc.mjs",
+    "check:dist": "node scripts/check-dist.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.pc.json",
     "test": "vitest run"
   },

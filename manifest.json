@@ -4,23 +4,68 @@
   "name": "Telegram",
   "summary": "Ваш ИИ читает выбранные вами чаты Telegram — только чтение, всё на вашем ПК",
   "description": "Подключает ваш аккаунт Telegram к ИИ, который вы подключили к Quadro Hub (Claude, ChatGPT, Codex). Вы сами входите в Telegram на экране приложения — по QR-коду с телефона или по номеру и отмечаете, какие чаты ИИ может читать — по умолчанию ни один. ИИ читает только эти чаты: сообщения за период страницами, поиск, ссылки, картинки и файлы. Он ничего не отправляет, не удаляет и не отмечает прочитанным. Переписка и сессия остаются на вашем ПК (сессия зашифрована Windows) и не хранятся на сервере Hub. Каждое чтение ИИ записывается в журнал «Что читал ИИ». Права: своя папка данных на ПК (сессия, список чатов, журнал), сеть только к адресам Telegram для веб-клиентов (*.web.telegram.org), инструменты для ИИ.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "icon": "message-circle",
-  "engines": { "hub": "^2.0" },
+  "engines": {
+    "hub": "^2.0"
+  },
   "license": "proprietary",
   "madeByAi": "mostly",
   "parts": {
     "client": "client",
     "pc": {
       "entry": "pc/part.cjs",
-      "platforms": ["win32-x64"],
-      "activation": ["onScreen"]
+      "platforms": [
+        "win32-x64"
+      ],
+      "activation": [
+        "onScreen"
+      ]
     }
   },
-  "permissions": ["pc.files.own", "net:*.web.telegram.org", "pc.mcp"],
-  "views": { "main": { "surface": "web", "title": "Telegram", "entry": "index.html" } },
+  "permissions": [
+    "pc.files.own",
+    "net:*.web.telegram.org",
+    "pc.mcp"
+  ],
+  "publisherValues": [
+    {
+      "key": "api_id",
+      "label": "api_id Telegram",
+      "description": "Число из приложения издателя на my.telegram.org. Без него люди входят со своими ключами.",
+      "for": [
+        "pc"
+      ],
+      "required": true
+    },
+    {
+      "key": "api_hash",
+      "label": "api_hash Telegram",
+      "description": "32 знака из того же приложения на my.telegram.org.",
+      "for": [
+        "pc"
+      ],
+      "required": true
+    }
+  ],
+  "views": {
+    "main": {
+      "surface": "web",
+      "title": "Telegram",
+      "entry": "index.html"
+    }
+  },
   "contributes": {
-    "shell.railApp@1": [{ "id": "main", "title": "Telegram", "icon": "message-circle", "open": { "view": "main" } }]
+    "shell.railApp@1": [
+      {
+        "id": "main",
+        "title": "Telegram",
+        "icon": "message-circle",
+        "open": {
+          "view": "main"
+        }
+      }
+    ]
   },
   "mcp": {
     "tools": [
@@ -28,9 +73,14 @@
         "name": "chats",
         "title": "Чаты Telegram",
         "description": "Чаты Telegram, которые владелец разрешил ИИ читать (группы и личные): название, вид, chat id. Вызывайте первым — другие чаты недоступны.",
-        "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        },
         "handler": "pc:chats",
-        "readOnly": true
+        "readOnly": true,
+        "openWorld": true
       },
       {
         "name": "messages",
@@ -39,17 +89,37 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "chat": { "type": "string", "description": "chat id, @имя или название из telegram_chats" },
-            "from": { "type": "string", "description": "Начало периода: 2026-11-01 или 2026-11-01T18:00 (часовой пояс ПК владельца, если не указан)" },
-            "to": { "type": "string", "description": "Конец периода, включительно; по умолчанию — сейчас" },
-            "cursor": { "type": "string", "description": "nextCursor из прошлого ответа" },
-            "limit": { "type": "integer", "minimum": 1, "maximum": 300, "description": "Сообщений на странице, по умолчанию 100" }
+            "chat": {
+              "type": "string",
+              "description": "chat id, @имя или название из telegram_chats"
+            },
+            "from": {
+              "type": "string",
+              "description": "Начало периода: 2026-11-01 или 2026-11-01T18:00 (часовой пояс ПК владельца, если не указан)"
+            },
+            "to": {
+              "type": "string",
+              "description": "Конец периода, включительно; по умолчанию — сейчас"
+            },
+            "cursor": {
+              "type": "string",
+              "description": "nextCursor из прошлого ответа"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 300,
+              "description": "Сообщений на странице, по умолчанию 100"
+            }
           },
-          "required": ["chat"],
+          "required": [
+            "chat"
+          ],
           "additionalProperties": false
         },
         "handler": "pc:messages",
-        "readOnly": true
+        "readOnly": true,
+        "openWorld": true
       },
       {
         "name": "search",
@@ -58,17 +128,37 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "query": { "type": "string", "description": "Что искать, например «оплата» или «шапка»" },
-            "chat": { "type": "string", "description": "Только в этом чате (chat id, @имя или название); без него — во всех разрешённых" },
-            "from": { "type": "string", "description": "Не раньше: 2026-11-01" },
-            "to": { "type": "string", "description": "Не позже: 2026-11-30" },
-            "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Сколько найти, по умолчанию 50" }
+            "query": {
+              "type": "string",
+              "description": "Что искать, например «оплата» или «шапка»"
+            },
+            "chat": {
+              "type": "string",
+              "description": "Только в этом чате (chat id, @имя или название); без него — во всех разрешённых"
+            },
+            "from": {
+              "type": "string",
+              "description": "Не раньше: 2026-11-01"
+            },
+            "to": {
+              "type": "string",
+              "description": "Не позже: 2026-11-30"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "description": "Сколько найти, по умолчанию 50"
+            }
           },
-          "required": ["query"],
+          "required": [
+            "query"
+          ],
           "additionalProperties": false
         },
         "handler": "pc:search",
-        "readOnly": true
+        "readOnly": true,
+        "openWorld": true
       },
       {
         "name": "file",
@@ -77,14 +167,25 @@
         "inputSchema": {
           "type": "object",
           "properties": {
-            "chat": { "type": "string", "description": "chat id, @имя или название из telegram_chats" },
-            "message": { "type": "integer", "minimum": 1, "description": "Номер сообщения (#… из telegram_messages)" }
+            "chat": {
+              "type": "string",
+              "description": "chat id, @имя или название из telegram_chats"
+            },
+            "message": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Номер сообщения (#… из telegram_messages)"
+            }
           },
-          "required": ["chat", "message"],
+          "required": [
+            "chat",
+            "message"
+          ],
           "additionalProperties": false
         },
         "handler": "pc:file",
-        "readOnly": true
+        "readOnly": true,
+        "openWorld": true
       }
     ]
   }

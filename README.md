@@ -48,16 +48,20 @@ pc-sdk — как в документации автора: `npm i -D https://qu
 ## Упаковать и подписать
 
 ```bash
+npm run check:dist     # в dist/ нет значений издателя и ключей
 npm run qhapp -- pack "<эта папка>/dist" --out "<эта папка>/out/quadro.telegram-1.0.0.qhapp" --key ~/.quadro/keys/quadro-1.key --kid quadro-1
 npm run qhapp -- check "<эта папка>/out/quadro.telegram-1.0.0.qhapp" --publisher quadro --trust official --key quadro-1=<открытый ключ>
 ```
 
 ## Ключи Telegram (api_id, api_hash)
 
-- **Ключи Quadro** (издателя) — как у всех сторонних клиентов: человек сразу входит по QR. Их нельзя класть в пакет: пакет
-  публичный, а опубликованный api_hash Telegram ограничивает (`API_ID_PUBLISHED_FLOOD`). Часть берёт их из
-  `host.app.config.publisher.telegram = { apiId, apiHash }` — это значение издателя, которое платформа отдаёт части при
-  установке (`publisherKeysOf` в `pc/part.ts`; API платформы — в работе). Пока его нет — свои ключи.
+- **Ключи Quadro** (издателя) — как у всех сторонних клиентов: человек сразу входит по QR. В пакете их нет и быть не может:
+  пакет публичный, а опубликованный api_hash Telegram ограничивает у всех (`API_ID_PUBLISHED_FLOOD`).
+  - Манифест объявляет `publisherValues` `api_id` и `api_hash` (`for: ["pc"]`), значения задаёт издатель в Каталоге —
+    они хранятся запечатанными и меняются без новой версии (ядро §12б).
+  - Программа берёт их перед стартом части и кладёт в `host.app.config.publisher` (`publisherKeysOf` в `pc/part.ts`).
+  - Режим автора: `dist/publisher.dev.json` (`{ "api_id": "…", "api_hash": "…" }`) — только для проверки;
+    `npm run check:dist` не даст упаковать dist/ с ним.
 - **Свои ключи** с my.telegram.org — запасной путь («Аккаунт → Дополнительно», ссылка на шаге входа); подсказки при «ERROR» и
   «Too many attempts» — на экране ключей.
 - Сессия помнит, с какими ключами создана: смена ключей издателя не ломает вход.

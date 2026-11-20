@@ -163,9 +163,9 @@ describe('keys: Quadro’s (the publisher’s) or the person’s own', () => {
     await expect(s.service.useQuadroKeys()).rejects.toThrow(/Ключей Quadro пока нет/);
   });
 
-  it('reads the publisher’s keys only in their exact form', () => {
-    expect(publisherKeysOf({ publisher: { telegram: { apiId: '777000', apiHash: 'ABCDEFABCDEFABCDEFABCDEFABCDEF12' } } })).toEqual({ apiId: 777000, apiHash: 'abcdefabcdefabcdefabcdefabcdef12' });
-    for (const bad of [null, {}, { publisher: {} }, { publisher: { telegram: { apiId: 'x', apiHash: 'abcdefabcdefabcdefabcdefabcdef12' } } }, { publisher: { telegram: { apiId: 1, apiHash: 'short' } } }])
+  it('reads the publisher’s values (strings, as the program gives them) only in their exact form', () => {
+    expect(publisherKeysOf({ publisher: { api_id: ' 777000 ', api_hash: 'ABCDEFABCDEFABCDEFABCDEFABCDEF12' } })).toEqual({ apiId: 777000, apiHash: 'abcdefabcdefabcdefabcdefabcdef12' });
+    for (const bad of [null, {}, { publisher: {} }, { publisher: { api_id: '777000' } }, { publisher: { api_id: 'x', api_hash: 'abcdefabcdefabcdefabcdefabcdef12' } }, { publisher: { api_id: '1', api_hash: 'short' } }, { publisher: { api_id: '-5', api_hash: 'abcdefabcdefabcdefabcdefabcdef12' } }])
       expect(publisherKeysOf(bad)).toBeNull();
   });
 });
