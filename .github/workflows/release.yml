@@ -1,0 +1,30 @@
+# A version of the package in the Quadro Hub Catalog from a tag v<version> — no keys in the repository or its secrets
+# (Hub's guide «Выпуск из CI»): GitHub's OIDC token of this run is exchanged at Hub for a one-hour certificate on a key the run
+# makes itself, the built dist/ is signed with it and uploaded. The Catalog shows «Собрано из github.com/…@<commit>».
+# Trusted at Hub: «Каталог → Опубликовать → Выпуск из CI» — this repository, .github/workflows/release.yml, refs/tags/v*.
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+  id-token: write # GitHub's token for Hub — without it there is no exchange
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: the tag is the manifest's version
+        run: node -e "const v = require('./manifest.json').version; if (process.env.GITHUB_REF_NAME !== 'v' + v) { console.error('tag ' + process.env.GITHUB_REF_NAME + ' is not v' + v + ' of manifest.json'); process.exit(1); }"
+      - run: npm ci && npm run build
+      - name: qhapp
+        run: |
+          curl -fsSLO https://quadro-metaverse.site/pkg-sdk/qhapp/v1/qhapp-1.0.6.mjs
+          echo "cb88695c428fbcc5e27f388bbee6a74a1095a702d3fad38096ad07903e6416b9  qhapp-1.0.6.mjs" | sha256sum -c -
+      - run: node qhapp-1.0.6.mjs ci-publish dist --hub https://quadro-metaverse.site
