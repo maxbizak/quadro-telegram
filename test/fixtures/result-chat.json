@@ -1,0 +1,91 @@
+{
+ "name": "UGC команда",
+ "type": "private_supergroup",
+ "id": 1987654321,
+ "messages": [
+  {
+   "id": 398,
+   "type": "service",
+   "date": "2026-11-01T10:00:00",
+   "date_unixtime": "1793520000",
+   "actor": "Макс",
+   "actor_id": "user100",
+   "action": "invite_members",
+   "members": ["Даня"],
+   "text": "",
+   "text_entities": []
+  },
+  {
+   "id": 399,
+   "type": "message",
+   "date": "2026-11-14T16:29:00",
+   "date_unixtime": "1794670140",
+   "from": "Даня",
+   "from_id": "user200",
+   "text": "Перевёл за текстуры 700 ₽, спасибо!",
+   "text_entities": [{ "type": "plain", "text": "Перевёл за текстуры 700 ₽, спасибо!" }]
+  },
+  {
+   "id": 412,
+   "type": "message",
+   "date": "2026-11-18T20:22:00",
+   "date_unixtime": "1795022520",
+   "from": "Иван Петров",
+   "from_id": "user555",
+   "text": [
+    "Сделал 3 шапки для UGC, ",
+    { "type": "text_link", "text": "вот превью", "href": "https://www.roblox.com/catalog/123" },
+    ". С тебя 1 500 ₽, жду оплату"
+   ],
+   "text_entities": [
+    { "type": "plain", "text": "Сделал 3 шапки для UGC, " },
+    { "type": "text_link", "text": "вот превью", "href": "https://www.roblox.com/catalog/123" },
+    { "type": "plain", "text": ". С тебя 1 500 ₽, жду оплату" }
+   ],
+   "photo": "(File not included. Change data exporting settings to download.)",
+   "width": 1280,
+   "height": 720
+  },
+  {
+   "id": 415,
+   "type": "message",
+   "date": "2026-11-18T21:05:00",
+   "date_unixtime": "1795025100",
+   "edited": "2026-11-18T21:06:00",
+   "edited_unixtime": "1795025160",
+   "from": "Макс",
+   "from_id": "user100",
+   "reply_to_message_id": 412,
+   "text": "Оплатил, проверь",
+   "text_entities": [{ "type": "plain", "text": "Оплатил, проверь" }]
+  },
+  {
+   "id": 430,
+   "type": "message",
+   "date": "2026-11-19T20:20:00",
+   "date_unixtime": "1795119600",
+   "from": "Даня",
+   "from_id": "user200",
+   "file": "files/крылья.rbxm",
+   "file_name": "крылья.rbxm",
+   "file_size": 482133,
+   "mime_type": "application/octet-stream",
+   "text": "Аксессуар «крылья» готов, 400 robux — когда оплатишь?",
+   "text_entities": [{ "type": "plain", "text": "Аксессуар «крылья» готов, 400 robux — когда оплатишь?" }]
+  },
+  {
+   "id": 431,
+   "type": "message",
+   "date": "2026-11-19T20:30:00",
+   "date_unixtime": "1795120200",
+   "from": "Даня",
+   "from_id": "user200",
+   "forwarded_from": "Roblox UGC биржа",
+   "text": "Ищем моделлера, оплата по договорённости https://t.me/ugc_birzha/1201",
+   "text_entities": [
+    { "type": "plain", "text": "Ищем моделлера, оплата по договорённости " },
+    { "type": "link", "text": "https://t.me/ugc_birzha/1201" }
+   ]
+  }
+ ]
+}

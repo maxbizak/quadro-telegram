@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bot, Check, ExternalLink, History, KeyRound, LogOut, Megaphone, MessageCircle, RefreshCw, Search, ShieldCheck, User, Users } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Bot, Check, ExternalLink, FileArchive, History, KeyRound, LogOut, Megaphone, MessageCircle, RefreshCw, Search, ShieldCheck, Trash2, Upload, User, Users } from 'lucide-react';
 import qrcode from 'qrcode-generator';
 import { errorText, quadro, usePcEvents, useQuadro } from './quadro';
 
@@ -8,11 +8,24 @@ import { errorText, quadro, usePcEvents, useQuadro } from './quadro';
 // what it read. Nothing of Telegram is stored in Hub.
 
 type Kind = 'user' | 'bot' | 'group' | 'channel';
-type Status = { canSeal: boolean; configured: boolean; keys: 'own' | 'publisher' | null; publisherKeys: boolean; apiId: number | null; signedIn: boolean; me: { name: string; username?: string } | null; step: 'code' | 'qr' | 'password' | 'done' | null; allowed: number };
-type Chat = { id: string; kind: Kind; title: string; username?: string; unread?: number; lastAt?: string; allowed: boolean };
+type Status = {
+  canSeal: boolean;
+  configured: boolean;
+  keys: 'own' | 'publisher' | null;
+  publisherKeys: boolean;
+  apiId: number | null;
+  signedIn: boolean;
+  me: { name: string; username?: string } | null;
+  step: 'code' | 'qr' | 'password' | 'done' | null;
+  allowed: number;
+  /** Loaded exports of Telegram Desktop (no sign-in, no keys). */
+  exports?: { chats: number; exportedAt: string | null };
+};
+type Chat = { id: string; kind: Kind; title: string; username?: string; unread?: number; lastAt?: string; allowed: boolean; source?: 'export'; exportedAt?: string; messages?: number };
+type ExportChat = { id: string; kind: Kind; title: string; exportedAt: string; messages: number; firstAt: string | null; lastAt: string | null; allowed: boolean };
 type Read = { at: string; tool: string; chats: string[]; messages: number; files: number; bytes: number; query?: string; error?: string };
 type Login = { step: 'code' | 'qr' | 'password' | 'done' | 'error'; viaApp?: boolean; hint?: string; wrong?: boolean; url?: string; expiresMs?: number; message?: string };
-type Tab = 'access' | 'journal' | 'account';
+type Tab = 'access' | 'journal' | 'export' | 'account';
 
 const pc = <T,>(method: string, params?: unknown) => quadro.pc.call<T>(method, params);
 const KIND: Record<Kind, { label: string; icon: typeof User }> = {
@@ -24,6 +37,7 @@ const KIND: Record<Kind, { label: string; icon: typeof User }> = {
 const TOOL: Record<string, string> = { chats: 'Список чатов', messages: 'Читал сообщения', search: 'Искал', file: 'Открыл файл' };
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 const kb = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} КБ` : `${(n / 1048576).toFixed(1)} МБ`);
+const day = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString('ru', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
 
 export function App() {
   const { ctx, error } = useQuadro();
@@ -64,6 +78,8 @@ function TelegramScreen() {
   const [status, setStatus] = useState<Status | null>(null);
   const [message, setMessage] = useState('');
   const [changingKeys, setChangingKeys] = useState(false);
+  // «auto» — by the status; «export» — loading an export of Telegram Desktop; «login» — signing in although exports are loaded.
+  const [view, setView] = useState<'auto' | 'export' | 'login'>('auto');
   const refresh = useCallback(async () => {
     try {
       setStatus(await pc<Status>('status'));
@@ -81,20 +97,47 @@ function TelegramScreen() {
         <p className="q-muted">Этой версии программы нечем зашифровать вход в Telegram на ПК. Без шифрования приложение ничего не сохраняет — обновите программу и откройте экран снова.</p>
       </section>
     );
+  else if (status && view === 'export')
+    body = (
+      <section className="q-card q-stack">
+        <ExportLoader
+          onLoaded={async () => {
+            setView('auto');
+            await refresh();
+          }}
+        />
+        <div>
+          <button type="button" className="q-btn" onClick={() => setView('auto')}>
+            Назад
+          </button>
+        </div>
+      </section>
+    );
+  else if (status && !status.signedIn && (status.exports?.chats ?? 0) > 0 && view === 'auto' && !changingKeys)
+    body = <Workspace status={status} onChanged={refresh} onOwnKeys={() => setChangingKeys(true)} onLogin={() => setView('login')} />;
   else if (status && (!status.configured || changingKeys))
     body = (
-      <KeysStep
-        first={!status.configured}
-        signedIn={status.signedIn}
-        onCancel={changingKeys ? () => setChangingKeys(false) : null}
-        onDone={async () => {
-          setChangingKeys(false);
-          await refresh();
-        }}
-      />
+      <>
+        <KeysStep
+          first={!status.configured}
+          signedIn={status.signedIn}
+          onCancel={changingKeys ? () => setChangingKeys(false) : null}
+          onDone={async () => {
+            setChangingKeys(false);
+            await refresh();
+          }}
+        />
+        {!status.signedIn && !changingKeys && <ExportOffer status={status} onOpen={() => setView((status.exports?.chats ?? 0) > 0 ? 'auto' : 'export')} />}
+      </>
     );
-  else if (status && !status.signedIn) body = <LoginStep status={status} onDone={refresh} onChangeKeys={() => setChangingKeys(true)} />;
-  else if (status) body = <SignedIn status={status} onChanged={refresh} onOwnKeys={() => setChangingKeys(true)} />;
+  else if (status && !status.signedIn)
+    body = (
+      <>
+        <LoginStep status={status} onDone={refresh} onChangeKeys={() => setChangingKeys(true)} />
+        <ExportOffer status={status} onOpen={() => setView((status.exports?.chats ?? 0) > 0 ? 'auto' : 'export')} />
+      </>
+    );
+  else if (status) body = <Workspace status={status} onChanged={refresh} onOwnKeys={() => setChangingKeys(true)} onLogin={() => setView('login')} />;
 
   return (
     <main className="tg">
@@ -408,25 +451,41 @@ function QuadroKeysButton({ onDone }: { onDone: () => void }) {
   );
 }
 
-function SignedIn({ status, onChanged, onOwnKeys }: { status: Status; onChanged: () => void; onOwnKeys: () => void }) {
+/**
+ * The chats, «Что читал ИИ» and the exports: with the signed-in account, or with exports of Telegram Desktop only (no sign-in) —
+ * then «Аккаунт» gives way to «Войти в Telegram».
+ */
+function Workspace({ status, onChanged, onOwnKeys, onLogin }: { status: Status; onChanged: () => void; onOwnKeys: () => void; onLogin: () => void }) {
+  const live = status.signedIn;
   const [tab, setTab] = useState<Tab>('access');
   const [journalSeen, setJournalSeen] = useState<Read[] | null>(null);
+  const tabs: Array<readonly [Tab, string]> = [
+    ['access', 'Доступ для ИИ'],
+    ['journal', 'Что читал ИИ'],
+    ['export', 'Выгрузка'],
+  ];
+  if (live) tabs.push(['account', 'Аккаунт']);
   return (
     <>
       <div className="q-row tg-me">
-        <span className="q-badge">
-          <Check size={12} /> Подключён: {status.me?.name}
-          {status.me?.username ? ` · @${status.me.username}` : ''}
-        </span>
+        {live ? (
+          <span className="q-badge">
+            <Check size={12} /> Подключён: {status.me?.name}
+            {status.me?.username ? ` · @${status.me.username}` : ''}
+          </span>
+        ) : (
+          <>
+            <span className="q-badge">
+              <FileArchive size={12} /> Без входа — по выгрузке из Telegram Desktop{status.exports?.exportedAt ? ` от ${day(status.exports.exportedAt)}` : ''}
+            </span>
+            <button type="button" className="q-btn" onClick={onLogin}>
+              Войти в Telegram
+            </button>
+          </>
+        )}
       </div>
       <div className="tg-tabs" role="tablist" aria-label="Разделы">
-        {(
-          [
-            ['access', 'Доступ для ИИ'],
-            ['journal', 'Что читал ИИ'],
-            ['account', 'Аккаунт'],
-          ] as const
-        ).map(([id, label]) => (
+        {tabs.map(([id, label]) => (
           <button key={id} type="button" role="tab" aria-selected={tab === id} className="tg-tab" onClick={() => setTab(id)}>
             {label}
           </button>
@@ -434,7 +493,8 @@ function SignedIn({ status, onChanged, onOwnKeys }: { status: Status; onChanged:
       </div>
       {tab === 'access' && <Access onChanged={onChanged} />}
       {tab === 'journal' && <Journal initial={journalSeen} onLoaded={setJournalSeen} />}
-      {tab === 'account' && <Account status={status} onChanged={onChanged} onOwnKeys={onOwnKeys} />}
+      {tab === 'export' && <Exports onChanged={onChanged} onAccess={() => setTab('access')} />}
+      {tab === 'account' && live && <Account status={status} onChanged={onChanged} onOwnKeys={onOwnKeys} />}
     </>
   );
 }
@@ -518,7 +578,7 @@ function Access({ onChanged }: { onChanged: () => void }) {
                   <div className="q-subtle">
                     {K.label}
                     {c.username ? ` · @${c.username}` : ''}
-                    {c.lastAt ? ` · ${when(c.lastAt)}` : ''}
+                    {c.source === 'export' ? ` · выгрузка от ${day(c.exportedAt)}${c.messages ? ` · ${c.messages} сообщ.` : ''}` : c.lastAt ? ` · ${when(c.lastAt)}` : ''}
                   </div>
                 </div>
                 <label className="tg-switch">
@@ -595,6 +655,183 @@ function Journal({ initial, onLoaded }: { initial: Read[] | null; onLoaded: (r: 
             </button>
           </div>
         </>
+      )}
+    </section>
+  );
+}
+
+/** Next to the keys and the sign-in: an export of Telegram Desktop instead — no keys, no sign-in. */
+function ExportOffer({ status, onOpen }: { status: Status; onOpen: () => void }) {
+  const has = (status.exports?.chats ?? 0) > 0;
+  return (
+    <section className="q-card tg-offer">
+      <FileArchive size={20} className="tg-accent" />
+      <div className="tg-grow">
+        <h2>{has ? 'Выгрузка уже загружена' : 'Нет ключей или не получается войти?'}</h2>
+        <p className="q-muted">
+          {has
+            ? `ИИ читает её чаты без входа в Telegram (выгрузка от ${day(status.exports?.exportedAt)}).`
+            : 'Загрузите выгрузку переписки из Telegram Desktop — без ключей и без входа. ИИ прочитает выбранные чаты так же, только до дня выгрузки.'}
+        </p>
+      </div>
+      <button type="button" className="q-btn" onClick={onOpen}>
+        {has ? 'Открыть' : 'Загрузить выгрузку'}
+      </button>
+    </section>
+  );
+}
+
+/** A piece of result.json per call to the part (the file is read here, on this PC; the part reads no file of the PC itself). */
+const EXPORT_CHUNK = 4_000_000;
+
+/** How to make an export in Telegram Desktop, then its result.json picked here and handed to the part. */
+function ExportLoader({ onLoaded }: { onLoaded: (added: ExportChat[]) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [error, setError] = useState('');
+  const load = async (file: File) => {
+    setError('');
+    setProgress(0);
+    try {
+      if (!/\.json$/i.test(file.name)) throw new Error('Нужен файл result.json из папки выгрузки — формат «Машиночитаемый JSON», не HTML');
+      const text = await file.text();
+      const { id } = await pc<{ id: string }>('importStart', { size: text.length, exportedAt: file.lastModified });
+      for (let at = 0; at < text.length; at += EXPORT_CHUNK) {
+        await pc('importChunk', { id, text: text.slice(at, at + EXPORT_CHUNK) });
+        setProgress(Math.min(99, Math.round(((at + EXPORT_CHUNK) / text.length) * 100)));
+      }
+      const r = await pc<{ added: ExportChat[]; chats: number }>('importEnd', { id });
+      setProgress(null);
+      void quadro.ui.toast(r.added.length === 1 ? `Загружен чат «${r.added[0]!.title}»: ${r.added[0]!.messages} сообщ.` : `Загружено чатов: ${r.added.length}`, 'success');
+      onLoaded(r.added);
+    } catch (e) {
+      setProgress(null);
+      setError(errorText(e));
+    } finally {
+      if (input.current) input.current.value = '';
+    }
+  };
+  return (
+    <div className="q-stack">
+      <div className="tg-step">
+        <FileArchive size={20} className="tg-accent" />
+        <h2>Выгрузка из Telegram Desktop</h2>
+      </div>
+      <p className="q-muted">
+        Без ключей и без входа: Telegram Desktop сам сохраняет переписку в файл, а ИИ читает её отсюда. Новые сообщения появятся, когда вы выгрузите чат снова.
+      </p>
+      <ol className="tg-howto">
+        <li>Откройте Telegram Desktop на этом ПК и нужный чат — например, с заказчиком или группу UGC.</li>
+        <li>Нажмите ⋮ справа вверху → «Экспорт истории чата».</li>
+        <li>
+          Снимите галочки «Фото», «Видео», «Файлы» — ИИ нужен текст. Формат — <b>«Машиночитаемый JSON»</b>. Нажмите «Экспортировать».
+        </li>
+        <li>
+          Когда Telegram покажет папку выгрузки, выберите здесь файл <b>result.json</b> из неё.
+        </li>
+      </ol>
+      <p className="q-subtle">Все чаты сразу: Настройки → Продвинутые → «Экспорт данных из Telegram», отметьте «Личные чаты» и группы, формат JSON.</p>
+      <input
+        ref={input}
+        type="file"
+        accept=".json,application/json"
+        hidden
+        aria-label="Файл result.json"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void load(f);
+        }}
+      />
+      <div className="q-row">
+        <button type="button" className="q-btn q-btn-primary" disabled={progress !== null} onClick={() => input.current?.click()}>
+          <Upload size={16} /> {progress !== null ? `Загружаю… ${progress}%` : 'Выбрать result.json'}
+        </button>
+      </div>
+      {error && (
+        <p className="tg-error" role="alert">
+          {error}
+        </p>
+      )}
+      <p className="q-subtle">
+        <ShieldCheck size={12} /> Файл читается на этом ПК. Переписка хранится только в папке приложения, зашифрованная Windows, и не уходит на сервер Hub. Убрать её — во вкладке «Выгрузка».
+      </p>
+    </div>
+  );
+}
+
+/** «Выгрузка»: load another export, the loaded chats (each removable), remove all. */
+function Exports({ onChanged, onAccess }: { onChanged: () => void; onAccess: () => void }) {
+  const [list, setList] = useState<ExportChat[] | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      setList(await pc<ExportChat[]>('exportsList'));
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }, []);
+  useEffect(() => void load(), [load]);
+  const remove = async (id: string | null) => {
+    setBusy(true);
+    setError('');
+    try {
+      await pc('removeExport', id ? { id } : {});
+      await load();
+      onChanged();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="q-stack">
+      <div className="q-card">
+        <ExportLoader
+          onLoaded={async () => {
+            await load();
+            onChanged();
+            onAccess();
+          }}
+        />
+      </div>
+      {error && (
+        <p className="tg-error" role="alert">
+          {error}
+        </p>
+      )}
+      {list && list.length > 0 && (
+        <div className="q-card q-stack">
+          <h2>Загруженные чаты</h2>
+          <ul className="q-list">
+            {list.map((c) => {
+              const K = KIND[c.kind];
+              return (
+                <li key={c.id} className="tg-chat">
+                  <K.icon size={18} className={c.allowed ? 'tg-accent' : 'q-muted'} />
+                  <div className="tg-grow">
+                    <div className="tg-name">{c.title}</div>
+                    <div className="q-subtle">
+                      {K.label} · {c.messages} сообщ.{c.firstAt && c.lastAt ? ` · ${day(c.firstAt)} — ${day(c.lastAt)}` : ''} · выгрузка от {day(c.exportedAt)} · {c.allowed ? 'ИИ читает' : 'закрыт для ИИ'}
+                    </div>
+                  </div>
+                  <button type="button" className="q-btn" aria-label={`Убрать выгрузку «${c.title}»`} disabled={busy} onClick={() => void remove(c.id)}>
+                    <Trash2 size={16} /> Убрать
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="q-row tg-wrap">
+            <button type="button" className="q-btn" onClick={onAccess}>
+              Доступ для ИИ
+            </button>
+            <button type="button" className="q-btn q-btn-danger" disabled={busy} onClick={() => void remove(null)}>
+              Убрать все выгрузки
+            </button>
+          </div>
+        </div>
       )}
     </section>
   );

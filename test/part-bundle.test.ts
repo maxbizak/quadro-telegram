@@ -69,7 +69,21 @@ afterAll(async () => {
 
 describe('the built part of «Telegram»', () => {
   it('starts with nothing: no keys, no session, sealing available', async () => {
-    expect(await rpc.call('status')).toEqual({ canSeal: true, configured: false, keys: null, publisherKeys: false, apiId: null, signedIn: false, me: null, step: null, allowed: 0 });
+    expect(await rpc.call('status')).toEqual({ canSeal: true, configured: false, keys: null, publisherKeys: false, apiId: null, signedIn: false, me: null, step: null, allowed: 0, exports: { chats: 0, exportedAt: null } });
+  });
+
+  it('takes an export of Telegram Desktop from its screen with no keys — sealed, no WebSocket opened', async () => {
+    const text = readFileSync(join(__dirname, 'fixtures', 'result-chat.json'), 'utf8');
+    const { id } = (await rpc.call('importStart', { size: text.length, exportedAt: Date.parse('2026-11-20T09:30:00Z') })) as { id: string };
+    await rpc.call('importChunk', { id, text: text.slice(0, 1500) });
+    await rpc.call('importChunk', { id, text: text.slice(1500) });
+    const done = (await rpc.call('importEnd', { id })) as { added: Array<{ title: string; messages: number }> };
+    expect(done.added).toEqual([expect.objectContaining({ title: 'UGC команда', messages: 6 })]);
+    expect(await rpc.call('chats', {})).toEqual([expect.objectContaining({ title: 'UGC команда', source: 'export', allowed: false })]);
+    expect(readFileSync(join(dataDir, 'exports.bin'), 'utf8').startsWith('SEALED:')).toBe(true);
+    expect(opened).toEqual([]);
+    await rpc.call('removeExport', {});
+    expect(await rpc.call('exportsList')).toEqual([]);
   });
 
   it('keeps the keys sealed by the program', async () => {

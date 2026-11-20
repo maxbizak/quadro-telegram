@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ExportChat } from './export';
 import type { ChatKind, PeerRef } from './types';
 
 // What the part keeps, all in its own data folder on the PC (pc.files.own) — nothing goes to Hub's server:
@@ -7,6 +8,7 @@ import type { ChatKind, PeerRef } from './types';
 //   access.json  the chats the person let the AI read (id, kind, title, how to address it)
 //   journal.json what the AI read: when, which tool, which chats, how many messages and bytes — never the content
 //   files/       attachments the AI asked for that are not pictures or text (to read on this PC), the newest 100
+//   exports.bin  chats of Telegram Desktop's exports the person loaded (no sign-in needed), sealed by Windows like the session
 
 export interface Sealer {
   seal(data: Uint8Array | string): Promise<Uint8Array>;
@@ -29,6 +31,8 @@ export interface AllowedChat {
   peer: PeerRef;
   /** When the person allowed it (ISO). */
   since: string;
+  /** A chat of a loaded export (Telegram Desktop's), not of the signed-in account. */
+  source?: 'export';
 }
 
 export interface JournalEntry {
@@ -106,7 +110,26 @@ export class Store {
     if (keys) {
       rmSync(this.path('access.json'), { force: true });
       rmSync(this.path('journal.json'), { force: true });
+      rmSync(this.path('exports.bin'), { force: true });
     }
+  }
+
+  /** The loaded exports' chats (sealed); none — nothing loaded, another Windows user's file, or no sealing. */
+  async exports(): Promise<ExportChat[]> {
+    if (!this.sealer || !existsSync(this.path('exports.bin'))) return [];
+    try {
+      const raw = Buffer.from(await this.sealer.unseal(new Uint8Array(readFileSync(this.path('exports.bin'))))).toString('utf8');
+      const list = (JSON.parse(raw) as { chats?: ExportChat[] }).chats;
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async saveExports(chats: ExportChat[]): Promise<void> {
+    if (!chats.length) return void rmSync(this.path('exports.bin'), { force: true });
+    if (!this.sealer) throw new Error('Программа Quadro Hub не умеет защищать выгрузку: обновите программу');
+    this.writeFile('exports.bin', await this.sealer.seal(JSON.stringify({ chats })));
   }
 
   allowed(): AllowedChat[] {

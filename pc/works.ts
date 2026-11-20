@@ -31,6 +31,8 @@ export interface WorkItem {
   /** https://t.me/… — the message itself (exact) or only the chat; null — Telegram gives no address (a small group, a person without @имя). */
   link: string | null;
   exact: boolean;
+  /** Read from an export of Telegram Desktop made then (ISO), not from the live account. */
+  exportedAt?: string;
 }
 
 export interface WorksData {
@@ -141,7 +143,7 @@ function snippet(m: TgMessage): string {
 }
 
 /** The found messages as the screen's list: newest first as found; «оплатил» in a found answer marks the message it answers. */
-export function worksData(query: string, found: Array<{ chat: { id: string; kind: ChatKind; title: string; username?: string | null }; m: TgMessage }>): WorksData {
+export function worksData(query: string, found: Array<{ chat: { id: string; kind: ChatKind; title: string; username?: string | null; exportedAt?: string }; m: TgMessage }>): WorksData {
   const all: WorkItem[] = found.map(({ chat, m }) => {
     const link = messageLink(chat, m.id);
     const full = `${m.text} ${m.attachments.map((a) => a.title ?? '').join(' ')}`;
@@ -158,6 +160,7 @@ export function worksData(query: string, found: Array<{ chat: { id: string; kind
       ...(m.replyTo ? { replyTo: m.replyTo } : {}),
       link: link?.url ?? null,
       exact: link?.exact ?? false,
+      ...(chat.exportedAt ? { exportedAt: chat.exportedAt } : {}),
     };
   });
   const byKey = new Map(all.map((w) => [`${w.chatId}#${w.id}`, w]));

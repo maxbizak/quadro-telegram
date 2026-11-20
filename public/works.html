@@ -115,6 +115,11 @@
           if (isNaN(d.getTime())) return '';
           return d.toLocaleString('ru-RU', { day: 'numeric', month: 'short', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric', hour: '2-digit', minute: '2-digit' });
         }
+        /** «20.11.2026» — the day an export of Telegram Desktop was made. */
+        function exportDay(iso) {
+          var d = new Date(iso);
+          return isNaN(d.getTime()) ? '' : d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+        }
         function isWorks(d) {
           return !!d && typeof d === 'object' && Array.isArray(d.items);
         }
@@ -194,6 +199,7 @@
           var chat = el('div', 'cell c-chat');
           chat.appendChild(el('span', 'chat', w.chat));
           chat.appendChild(el('span', 'sub', when(w.date) + ' · #' + w.id));
+          if (w.exportedAt) chat.appendChild(el('span', 'sub', 'по выгрузке от ' + exportDay(w.exportedAt)));
           var who = el('div', 'cell c-who', w.who);
           if (w.username) who.title = '@' + w.username;
           var text = el('div', 'cell c-text');
@@ -250,6 +256,14 @@
             count[paidKey(w)]++;
           });
           var sub = 'Поиск «' + d.query + '» · ' + d.count + ' сообщ.';
+          // Chats read from an export of Telegram Desktop: newer messages than its day are not there.
+          var exported = d.items
+            .map(function (w) {
+              return w.exportedAt || '';
+            })
+            .filter(Boolean)
+            .sort();
+          if (exported.length) sub += ' · по выгрузке от ' + exportDay(exported[0]) + (exportDay(exported[0]) !== exportDay(exported[exported.length - 1]) ? '–' + exportDay(exported[exported.length - 1]) : '');
           if (d.shown < d.count) sub += ' · показаны ' + d.shown + ' (остальные ИИ видит текстом)';
           $('sub').textContent = sub;
           if (!items.length) {

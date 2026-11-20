@@ -1,6 +1,7 @@
 import { extname } from 'node:path';
 import type { AllowedChat, JournalEntry, Store } from './store';
-import type { Downloaded, LoginState, Me, TgApi, TgChat, TgFactory, TgMessage } from './types';
+import { EXPORT_MAX_CHARS, ExportError, ExportReader, exportDate, mergeExports, parseExport, type ExportChat } from './export';
+import type { Downloaded, LoginState, Me, PeerRef, TgApi, TgChat, TgFactory, TgMessage } from './types';
 import { worksData } from './works';
 import { docxText } from './zip-text';
 
@@ -138,6 +139,10 @@ export class TelegramService {
   private dialogs: { at: number; list: TgChat[] } | null = null;
   private me: Me | null = null;
   private qr: QrFlow | null = null;
+  /** The loaded exports (read once from the sealed file) and the reader over them. */
+  private exportsCache: { chats: ExportChat[]; reader: ExportReader } | null = null;
+  /** A result.json coming from the screen in pieces (the screen reads the file; the part reads no file of the PC). */
+  private uploads = new Map<string, { parts: string[]; size: number; exportedAt: string; at: number }>();
 
   constructor(private readonly d: ServiceDeps) {}
 
@@ -166,7 +171,7 @@ export class TelegramService {
   /** The signed-in client, or the reason in words. */
   private async signedIn(): Promise<TgApi> {
     const c = await this.connect();
-    if (!(await c.authorized())) throw new UserError('Telegram не подключён: владелец входит в аккаунт на экране приложения Telegram', 'NOT_SIGNED_IN');
+    if (!(await c.authorized())) throw new UserError('Telegram не подключён: владелец входит в аккаунт на экране приложения Telegram или загружает там выгрузку из Telegram Desktop', 'NOT_SIGNED_IN');
     return c;
   }
 
@@ -224,7 +229,108 @@ export class TelegramService {
       me: signedIn ? this.me : null,
       step: signedIn ? 'done' : this.loginStep,
       allowed: this.d.store.allowed().length,
+      /** Loaded exports of Telegram Desktop: how many chats, the newest export's time. */
+      exports: await this.exportsInfo(),
     };
+  }
+
+  // ——— Exports of Telegram Desktop (no sign-in, no keys) ———
+
+  private async loadedExports(): Promise<{ chats: ExportChat[]; reader: ExportReader }> {
+    if (!this.exportsCache) {
+      const chats = await this.d.store.exports();
+      this.exportsCache = { chats, reader: new ExportReader(chats) };
+    }
+    return this.exportsCache;
+  }
+
+  private async exportsInfo(): Promise<{ chats: number; exportedAt: string | null }> {
+    const { chats } = await this.loadedExports();
+    const newest = chats.map((c) => c.exportedAt).sort().at(-1) ?? null;
+    return { chats: chats.length, exportedAt: newest };
+  }
+
+  /** A result.json begins: its size (characters) and the file's time. */
+  importStart(x: unknown): { id: string } {
+    const p = obj(x);
+    const size = Number(p.size);
+    if (!Number.isInteger(size) || size <= 0) throw new UserError('Пустой файл');
+    if (size > EXPORT_MAX_CHARS) throw new UserError('Выгрузка слишком большая: выгрузите нужные чаты по одному и без фото, видео и файлов');
+    const t = typeof p.exportedAt === 'number' ? p.exportedAt : Date.parse(String(p.exportedAt ?? ''));
+    const exportedAt = new Date(Number.isFinite(t) && t > 0 ? t : this.now()).toISOString();
+    // Pieces left by a screen that went away are dropped after 10 minutes.
+    for (const [id, u] of this.uploads) if (this.now() - u.at > 600_000) this.uploads.delete(id);
+    const id = `${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.uploads.set(id, { parts: [], size, exportedAt, at: this.now() });
+    return { id };
+  }
+
+  importChunk(x: unknown): { received: number } {
+    const p = obj(x);
+    const u = this.uploads.get(String(p.id ?? ''));
+    if (!u) throw new UserError('Загрузка выгрузки прервалась — выберите файл ещё раз');
+    const text = typeof p.text === 'string' ? p.text : '';
+    const received = u.parts.reduce((n, t) => n + t.length, 0) + text.length;
+    if (received > u.size) throw new UserError('Файл больше, чем было сказано — выберите его ещё раз');
+    u.parts.push(text);
+    u.at = this.now();
+    return { received };
+  }
+
+  /** The whole file came: its chats are read and kept (sealed) — a chat exported again replaces its older copy. */
+  async importEnd(x: unknown) {
+    const id = String(obj(x).id ?? '');
+    const u = this.uploads.get(id);
+    if (!u) throw new UserError('Загрузка выгрузки прервалась — выберите файл ещё раз');
+    this.uploads.delete(id);
+    let fresh: ExportChat[];
+    try {
+      fresh = parseExport(u.parts.join(''), u.exportedAt);
+    } catch (e) {
+      throw e instanceof ExportError ? new UserError(e.message, 'BAD_EXPORT') : e;
+    }
+    const { chats } = await this.loadedExports();
+    const all = mergeExports(chats, fresh);
+    await this.d.store.saveExports(all);
+    this.exportsCache = { chats: all, reader: new ExportReader(all) };
+    return { added: fresh.map((c) => this.exportSummary(c)), chats: all.length };
+  }
+
+  private exportSummary(c: ExportChat) {
+    return { id: c.id, kind: c.kind, title: c.title, exportedAt: c.exportedAt, messages: c.messages.length, firstAt: c.messages[0]?.date ?? null, lastAt: c.messages.at(-1)?.date ?? null };
+  }
+
+  /** The loaded exports' chats for the screen, each with its mark. */
+  async exportsList() {
+    const allowed = new Set(this.d.store.allowed().map((a) => a.id));
+    return (await this.loadedExports()).chats.map((c) => ({ ...this.exportSummary(c), allowed: allowed.has(c.id) }));
+  }
+
+  /** Removes one chat of the exports (`id`) or all of them; the AI loses them at once. */
+  async removeExport(x: unknown) {
+    const id = obj(x).id != null ? String(obj(x).id) : null;
+    const { chats } = await this.loadedExports();
+    const left = id ? chats.filter((c) => c.id !== id) : [];
+    await this.d.store.saveExports(left);
+    this.exportsCache = { chats: left, reader: new ExportReader(left) };
+    const gone = new Set(chats.filter((c) => !left.includes(c)).map((c) => c.id));
+    this.d.store.setAllowed(this.d.store.allowed().filter((a) => !(a.source === 'export' && gone.has(a.id))));
+    return { chats: left.length };
+  }
+
+  /** How the AI's tools reach this chat: the export it came from, or the signed-in account. */
+  private async readerFor(chat: AllowedChat): Promise<Pick<TgApi, 'read' | 'search' | 'message' | 'download'>> {
+    if (chat.source !== 'export') return this.signedIn();
+    const { reader } = await this.loadedExports();
+    if (!reader.chat(chat.id)) throw new UserError(`Выгрузки чата «${chat.title}» больше нет: владелец загружает её снова на экране приложения Telegram`, 'NOT_ALLOWED');
+    return reader;
+  }
+
+  /** «по выгрузке от 20.11.2026» for a chat of an export; '' for a live one. */
+  private async exportNote(chat: AllowedChat): Promise<string> {
+    if (chat.source !== 'export') return '';
+    const c = (await this.loadedExports()).reader.chat(chat.id);
+    return c ? `по выгрузке от ${exportDate(c.exportedAt)}` : '';
   }
 
   async setKeys(x: unknown): Promise<{ ok: true }> {
@@ -388,6 +494,7 @@ export class TelegramService {
     }
     await this.stop();
     await this.d.store.forget(keys);
+    if (keys) this.exportsCache = null;
     this.me = null;
     this.loginStep = null;
     this.dialogs = null;
@@ -395,12 +502,33 @@ export class TelegramService {
   }
 
   /** The person's chats for «Доступ для ИИ» (newest first), each with its mark. */
+  /**
+   * The person's chats for «Доступ для ИИ» (newest first), each with its mark: the signed-in account's, then the loaded exports'
+   * that the account does not have (`source: 'export'`, the export's time and how many messages). Without a session only the
+   * exports' — and Telegram is not asked at all.
+   */
   async chats(x: unknown) {
     const refresh = obj(x).refresh === true;
-    const c = await this.signedIn();
-    if (refresh || !this.dialogs || this.now() - this.dialogs.at > 60_000) this.dialogs = { at: this.now(), list: await c.chats(LIMITS.dialogs) };
+    const { chats: exported } = await this.loadedExports();
+    const session = this.d.store.canSeal ? (await this.d.store.secret())?.session : '';
+    let live: TgChat[] = [];
+    if (session || !exported.length) {
+      try {
+        const c = await this.signedIn();
+        if (refresh || !this.dialogs || this.now() - this.dialogs.at > 60_000) this.dialogs = { at: this.now(), list: await c.chats(LIMITS.dialogs) };
+        live = this.dialogs.list;
+      } catch (e) {
+        if (!exported.length) throw e;
+      }
+    }
     const allowed = new Set(this.d.store.allowed().map((a) => a.id));
-    return this.dialogs.list.map(({ peer: _peer, ...chat }) => ({ ...chat, allowed: allowed.has(chat.id) }));
+    const liveIds = new Set(live.map((c) => c.id));
+    return [
+      ...live.map(({ peer: _peer, ...chat }) => ({ ...chat, allowed: allowed.has(chat.id) })),
+      ...exported
+        .filter((c) => !liveIds.has(c.id))
+        .map((c) => ({ id: c.id, kind: c.kind, title: c.title, lastAt: c.messages.at(-1)?.date, source: 'export' as const, exportedAt: c.exportedAt, messages: c.messages.length, allowed: allowed.has(c.id) })),
+    ];
   }
 
   /** Marks a chat readable by the AI or not. Only a chat of the person's own list (the part knows how to reach it). */
@@ -409,9 +537,22 @@ export class TelegramService {
     const allow = obj(x).allowed === true;
     let list = this.d.store.allowed().filter((a) => a.id !== id);
     if (allow) {
-      const chat = this.dialogs?.list.find((ch) => ch.id === id) ?? (await this.chats({ refresh: true }), this.dialogs?.list.find((ch) => ch.id === id));
-      if (!chat) throw new UserError('Такого чата нет в вашем Telegram');
-      list = [...list, { id: chat.id, kind: chat.kind, title: chat.title, ...(chat.username ? { username: chat.username } : {}), peer: chat.peer, since: new Date(this.now()).toISOString() }];
+      const since = new Date(this.now()).toISOString();
+      const findLive = () => this.dialogs?.list.find((ch) => ch.id === id);
+      const exported = (await this.loadedExports()).reader.chat(id);
+      const session = this.d.store.canSeal ? (await this.d.store.secret())?.session : '';
+      let chat = findLive();
+      if (!chat && (session || !exported)) {
+        await this.chats({ refresh: true }).catch((e) => {
+          if (!exported) throw e;
+        });
+        chat = findLive();
+      }
+      if (chat) list = [...list, { id: chat.id, kind: chat.kind, title: chat.title, ...(chat.username ? { username: chat.username } : {}), peer: chat.peer, since }];
+      else if (exported) {
+        const peer: PeerRef = { type: exported.kind === 'channel' ? 'channel' : exported.kind === 'group' ? 'chat' : 'user', id: exported.id };
+        list = [...list, { id: exported.id, kind: exported.kind, title: exported.title, peer, since, source: 'export' }];
+      } else throw new UserError('Такого чата нет в вашем Telegram');
     }
     this.d.store.setAllowed(list);
     return { allowed: list.map(({ peer: _peer, ...a }) => a) };
@@ -466,10 +607,16 @@ export class TelegramService {
     return this.aiCall('chats', async () => {
       const list = this.d.store.allowed();
       const kinds = { user: 'личный', bot: 'бот', group: 'группа', channel: 'канал' } as const;
+      const notes = await Promise.all(list.map((a) => this.exportNote(a)));
       const text = list.length
-        ? [`Чаты Telegram, которые владелец разрешил читать (${list.length}):`, ...list.map((a) => `- ${a.title} — ${kinds[a.kind]}, chat=${a.id}${a.username ? `, @${a.username}` : ''}`)].join('\n')
+        ? [
+            `Чаты Telegram, которые владелец разрешил читать (${list.length}):`,
+            ...list.map((a, i) => `- ${a.title} — ${kinds[a.kind]}, chat=${a.id}${a.username ? `, @${a.username}` : ''}${notes[i] ? ` (${notes[i]}: новее сообщений в нём нет)` : ''}`),
+          ].join('\n')
         : 'Владелец ещё не разрешил ИИ ни одного чата. Он отмечает чаты в приложении Telegram в Quadro Hub → «Доступ для ИИ».';
-      return { answer: { text, data: { chats: list.map((a) => ({ id: a.id, title: a.title, kind: a.kind, username: a.username ?? null })) } }, entry: { chats: [], messages: 0, files: 0 } };
+      const exported = (await this.loadedExports()).reader;
+      const chats = list.map((a) => ({ id: a.id, title: a.title, kind: a.kind, username: a.username ?? null, ...(a.source === 'export' ? { exportedAt: exported.chat(a.id)?.exportedAt ?? null } : {}) }));
+      return { answer: { text, data: { chats } }, entry: { chats: [], messages: 0, files: 0 } };
     });
   }
 
@@ -477,13 +624,15 @@ export class TelegramService {
     return this.aiCall('messages', async () => {
       const p = obj(x);
       const chat = this.allowedChat(p.chat);
-      const toMs = parseTime(p.to, 'to', true, this.d.offsetMin) ?? this.now();
+      const c = await this.readerFor(chat);
+      // An export ends when it was made: without «to» its last 30 days are read, not the 30 days before now.
+      const exportedLast = chat.source === 'export' ? (await this.loadedExports()).reader.chat(chat.id)?.messages.at(-1)?.date : undefined;
+      const toMs = parseTime(p.to, 'to', true, this.d.offsetMin) ?? (exportedLast ? Math.min(this.now(), Date.parse(exportedLast)) : this.now());
       const fromMs = parseTime(p.from, 'from', false, this.d.offsetMin) ?? toMs - LIMITS.defaultDays * 86_400_000;
       if (fromMs > toMs) throw new UserError('from позже, чем to');
       const limit = Math.min(LIMITS.pageMax, Math.max(1, Number(p.limit ?? LIMITS.pageDefault) || LIMITS.pageDefault));
       const afterId = p.cursor != null && p.cursor !== '' ? Number(p.cursor) : undefined;
       if (afterId !== undefined && (!Number.isInteger(afterId) || afterId < 0)) throw new UserError('cursor — число из прошлого ответа (nextCursor)');
-      const c = await this.signedIn();
       const got = await c.read(chat.peer, { fromMs, toMs, ...(afterId ? { afterId } : {}), limit: limit + 1 });
       if (signal?.aborted) throw new UserError('ИИ отменил вызов', 'ABORTED');
       // Up to the page's size and the answer's size; the rest — the next page.
@@ -501,7 +650,8 @@ export class TelegramService {
       const last = got[taken - 1];
       const nextCursor = more && last ? String(last.id) : null;
       const period = `${localTime(new Date(fromMs).toISOString(), this.d.offsetMin)} — ${localTime(new Date(toMs).toISOString(), this.d.offsetMin)} (${zoneName(this.d.offsetMin)})`;
-      const header = `Чат «${chat.title}» (chat=${chat.id}), ${period}: ${taken} сообщ.${nextCursor ? ` Есть ещё — вызовите снова с cursor=${nextCursor}.` : ' Это всё за период.'}`;
+      const note = await this.exportNote(chat);
+      const header = `Чат «${chat.title}» (chat=${chat.id}${note ? `, ${note}` : ''}), ${period}: ${taken} сообщ.${nextCursor ? ` Есть ещё — вызовите снова с cursor=${nextCursor}.` : ' Это всё за период.'}`;
       const text = [header, '', ...lines].join('\n');
       return {
         answer: { text, data: { chat: chat.id, count: taken, nextCursor }, notice: `ИИ прочитал ${taken} сообщ. в чате «${chat.title}»` },
@@ -533,14 +683,16 @@ export class TelegramService {
     const fromMs = parseTime(p.from, 'from', false, this.d.offsetMin) ?? undefined;
     const toMs = parseTime(p.to, 'to', true, this.d.offsetMin) ?? undefined;
     const limit = Math.min(LIMITS.searchMax, Math.max(1, Number(p.limit ?? 50) || 50));
-    const c = await this.signedIn();
     const blocks: string[] = [];
-    const rows: Array<{ chat: AllowedChat; m: TgMessage }> = [];
+    const rows: Array<{ chat: AllowedChat & { exportedAt?: string }; m: TgMessage }> = [];
     let found = 0;
     let used = 0;
     for (const chat of chats) {
       if (signal?.aborted) throw new UserError('ИИ отменил вызов', 'ABORTED');
       if (found >= limit || used > LIMITS.answerChars) break;
+      // Each chat from where it is: the signed-in account, or the export it came from (then no Telegram at all).
+      const c = await this.readerFor(chat);
+      const exportedAt = chat.source === 'export' ? (await this.loadedExports()).reader.chat(chat.id)?.exportedAt : undefined;
       const list = await c.search(chat.peer, query, { limit: Math.min(LIMITS.searchPerChat, limit - found), ...(fromMs ? { fromMs } : {}), ...(toMs ? { toMs } : {}) });
       if (!list.length) continue;
       const lines = [];
@@ -548,11 +700,12 @@ export class TelegramService {
         const line = formatMessage(m, this.d.offsetMin);
         if (used + line.length > LIMITS.answerChars) break;
         lines.push(line);
-        rows.push({ chat, m });
+        rows.push({ chat: exportedAt ? { ...chat, exportedAt } : chat, m });
         used += line.length + 1;
         found++;
       }
-      blocks.push(`Чат «${chat.title}» (chat=${chat.id}) — ${lines.length}:\n${lines.join('\n')}`);
+      const note = exportedAt ? `, по выгрузке от ${exportDate(exportedAt)}` : '';
+      blocks.push(`Чат «${chat.title}» (chat=${chat.id}${note}) — ${lines.length}:\n${lines.join('\n')}`);
     }
     const text = found ? [`Поиск «${query}»: ${found} сообщ. (новые первыми)`, '', ...blocks].join('\n\n') : `Поиск «${query}»: ничего не найдено в разрешённых чатах.`;
     return {
@@ -568,9 +721,16 @@ export class TelegramService {
       const chat = this.allowedChat(p.chat);
       const id = Number(p.message);
       if (!Number.isInteger(id) || id <= 0) throw new UserError('message — номер сообщения (#… из telegram_messages)');
-      const c = await this.signedIn();
+      const c = await this.readerFor(chat);
       const m = await c.message(chat.peer, id);
       if (!m) throw new UserError('Нет такого сообщения в этом чате');
+      if (chat.source === 'export') {
+        // An export's files lie only in its folder on the owner's PC: what they are and where, never their content.
+        if (!m.attachments.length) throw new UserError('У этого сообщения нет файла или картинки');
+        const lines = m.attachments.map((a) => `- ${KIND_WORD[a.kind] ?? a.kind}${a.name ? ` «${a.name}»` : ''}${a.size ? `, ${kb(a.size)}` : ''}${a.title ? ` «${a.title}»` : ''}${a.description ? ` — ${a.description}` : ''}`);
+        const text = [`Сообщение #${id} в чате «${chat.title}» (${await this.exportNote(chat)}):`, ...lines, 'Файлы выгрузки ИИ не открывает: они только в папке выгрузки на ПК владельца — попросите его посмотреть.'].join('\n');
+        return { answer: { text, notice: `ИИ спросил о файле из выгрузки чата «${chat.title}»` }, entry: { chats: [chat.title], messages: 0, files: 0 } };
+      }
       const att = m.attachments.find((a) => a.downloadable);
       if (!att) throw new UserError('У этого сообщения нет файла или картинки');
       const done = (answer: McpAnswer, files = 1) => ({ answer: { ...answer, notice: `ИИ открыл файл из чата «${chat.title}»` }, entry: { chats: [chat.title], messages: 0, files } });
