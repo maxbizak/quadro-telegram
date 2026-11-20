@@ -35,6 +35,9 @@ export interface TgAttachment {
   description?: string;
   /** Can be fetched with the file tool. */
   downloadable: boolean;
+  /** An export's file: where it lies inside the export's folder (and its preview picture), read only from a folder given to read. */
+  path?: string;
+  thumbPath?: string;
 }
 
 export interface TgMessage {

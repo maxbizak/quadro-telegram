@@ -376,3 +376,27 @@
     flex-wrap: wrap;
   }
 }
+
+/* The part reading an export: a line and a bar in the theme's colours. */
+.tg-progress {
+  gap: 6px;
+}
+
+.tg-progress progress {
+  appearance: none;
+  width: 100%;
+  max-width: 420px;
+  height: 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--color-border);
+  overflow: hidden;
+}
+
+.tg-progress progress::-webkit-progress-bar {
+  background: var(--color-border);
+}
+
+.tg-progress progress::-webkit-progress-value {
+  background: var(--color-brand);
+}

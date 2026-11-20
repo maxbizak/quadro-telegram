@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Check, ExternalLink, FileArchive, History, KeyRound, LogOut, Megaphone, MessageCircle, RefreshCw, Search, ShieldCheck, Trash2, Upload, User, Users } from 'lucide-react';
+import { Bot, Check, ExternalLink, FileArchive, FolderOpen, History, KeyRound, LogOut, Megaphone, MessageCircle, RefreshCw, Search, ShieldCheck, Trash2, Upload, User, Users } from 'lucide-react';
 import qrcode from 'qrcode-generator';
 import { errorText, quadro, usePcEvents, useQuadro } from './quadro';
 
@@ -22,7 +22,23 @@ type Status = {
   exports?: { chats: number; exportedAt: string | null };
 };
 type Chat = { id: string; kind: Kind; title: string; username?: string; unread?: number; lastAt?: string; allowed: boolean; source?: 'export'; exportedAt?: string; messages?: number };
-type ExportChat = { id: string; kind: Kind; title: string; exportedAt: string; messages: number; firstAt: string | null; lastAt: string | null; allowed: boolean };
+type ExportChat = { id: string; kind: Kind; title: string; exportedAt: string; messages: number; firstAt: string | null; lastAt: string | null; withFiles?: boolean; allowed: boolean };
+/** The export being read by the part (the program reads the picked folder or file where it lies). */
+type ImportJob = {
+  id: string;
+  stage: 'picking' | 'reading' | 'done' | 'error' | 'cancelled';
+  folder: boolean;
+  name: string | null;
+  index: number;
+  files: number;
+  read: number;
+  size: number;
+  added: ExportChat[];
+  skipped: Array<{ name: string; error: string }>;
+  chats: number;
+  error: string | null;
+};
+type FileAccess = { read: boolean; folder: boolean };
 type Read = { at: string; tool: string; chats: string[]; messages: number; files: number; bytes: number; query?: string; error?: string };
 type Login = { step: 'code' | 'qr' | 'password' | 'done' | 'error'; viaApp?: boolean; hint?: string; wrong?: boolean; url?: string; expiresMs?: number; message?: string };
 type Tab = 'access' | 'journal' | 'export' | 'account';
@@ -685,10 +701,98 @@ function ExportOffer({ status, onOpen }: { status: Status; onOpen: () => void })
 const EXPORT_CHUNK = 4_000_000;
 
 /** How to make an export in Telegram Desktop, then its result.json picked here and handed to the part. */
+const mb = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} КБ` : `${(n / 1048576).toFixed(n < 100 * 1048576 ? 1 : 0)} МБ`);
+const running = (j: ImportJob | null) => !!j && (j.stage === 'picking' || j.stage === 'reading');
+
+function jobLine(j: ImportJob): string {
+  if (j.stage === 'picking') return j.folder ? 'Выберите папку выгрузки в окне Windows…' : 'Выберите result.json в окне Windows…';
+  const which = j.files > 1 ? ` (${j.index + 1} из ${j.files})` : '';
+  return `Читаю «${j.name ?? 'выгрузку'}»${which}${j.size ? ` — ${mb(j.read)} из ${mb(j.size)}` : '…'}`;
+}
+
+/**
+ * Loading an export of Telegram Desktop. With a program that reads picked files the part itself reads the export where it lies:
+ * the person picks its folder (its pictures then open for the AI) or only result.json, in Windows' own window. An older program —
+ * the screen reads result.json and hands its text to the part in pieces.
+ */
 function ExportLoader({ onLoaded }: { onLoaded: (added: ExportChat[]) => void }) {
   const input = useRef<HTMLInputElement>(null);
+  const [access, setAccess] = useState<FileAccess | null>(null);
+  const [job, setJob] = useState<ImportJob | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState('');
+  const alive = useRef(true);
+  const following = useRef<string | null>(null);
+
+  const finished = useCallback(
+    (j: ImportJob) => {
+      if (j.stage === 'error') setError(j.error ?? 'Не удалось прочитать выгрузку');
+      if (j.stage !== 'done') return;
+      const skipped = j.skipped.length ? ` Не прочитано: ${j.skipped.map((x) => `«${x.name}» — ${x.error}`).join('; ')}` : '';
+      if (skipped) setError(skipped.trim());
+      void quadro.ui.toast(j.added.length === 1 ? `Загружен чат «${j.added[0]!.title}»: ${j.added[0]!.messages} сообщ.` : `Загружено чатов: ${j.added.length}`, 'success');
+      onLoaded(j.added);
+    },
+    [onLoaded],
+  );
+
+  // Follows the part's reading until it ends (the part keeps reading if this screen closes; it shows the state when reopened).
+  const follow = useCallback(
+    async (id: string) => {
+      if (following.current === id) return;
+      following.current = id;
+      try {
+        for (;;) {
+          await new Promise((r) => setTimeout(r, 400));
+          if (!alive.current || following.current !== id) return;
+          const s = await pc<{ access: FileAccess; job: ImportJob | null }>('importState');
+          if (!alive.current) return;
+          setJob(s.job);
+          if (!s.job || s.job.id !== id) return;
+          if (!running(s.job)) {
+            finished(s.job);
+            return;
+          }
+        }
+      } catch (e) {
+        if (alive.current) setError(errorText(e));
+      } finally {
+        if (following.current === id) following.current = null;
+      }
+    },
+    [finished],
+  );
+
+  useEffect(() => {
+    alive.current = true;
+    pc<{ access: FileAccess; job: ImportJob | null }>('importState')
+      .then((s) => {
+        if (!alive.current) return;
+        setAccess(s.access);
+        if (running(s.job)) {
+          setJob(s.job);
+          void follow(s.job!.id);
+        }
+      })
+      // A part before 1.4.2 has no importState: the screen reads the file.
+      .catch(() => alive.current && setAccess({ read: false, folder: false }));
+    return () => {
+      alive.current = false;
+    };
+  }, [follow]);
+
+  const pick = async (folder: boolean) => {
+    setError('');
+    try {
+      const j = await pc<ImportJob>('importPick', { folder });
+      setJob(j);
+      void follow(j.id);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
+  // An older program: the screen reads result.json here and hands its text in pieces.
   const load = async (file: File) => {
     setError('');
     setProgress(0);
@@ -711,6 +815,10 @@ function ExportLoader({ onLoaded }: { onLoaded: (added: ExportChat[]) => void })
       if (input.current) input.current.value = '';
     }
   };
+
+  const busy = running(job) || progress !== null;
+  const byPart = !!access?.read;
+  const pct = job && job.stage === 'reading' && job.size ? Math.min(100, Math.round((job.read / job.size) * 100)) : null;
   return (
     <div className="q-stack">
       <div className="tg-step">
@@ -718,17 +826,29 @@ function ExportLoader({ onLoaded }: { onLoaded: (added: ExportChat[]) => void })
         <h2>Выгрузка из Telegram Desktop</h2>
       </div>
       <p className="q-muted">
-        Без ключей и без входа: Telegram Desktop сам сохраняет переписку в файл, а ИИ читает её отсюда. Новые сообщения появятся, когда вы выгрузите чат снова.
+        Без ключей и без входа: Telegram Desktop сам сохраняет переписку в папку, а ИИ читает её отсюда. Новые сообщения появятся, когда вы выгрузите чат снова.
       </p>
       <ol className="tg-howto">
         <li>Откройте Telegram Desktop на этом ПК и нужный чат — например, с заказчиком или группу UGC.</li>
         <li>Нажмите ⋮ справа вверху → «Экспорт истории чата».</li>
-        <li>
-          Снимите галочки «Фото», «Видео», «Файлы» — ИИ нужен текст. Формат — <b>«Машиночитаемый JSON»</b>. Нажмите «Экспортировать».
-        </li>
-        <li>
-          Когда Telegram покажет папку выгрузки, выберите здесь файл <b>result.json</b> из неё.
-        </li>
+        {byPart ? (
+          <li>
+            Формат — <b>«Машиночитаемый JSON»</b>. «Фото» можно оставить: тогда ИИ сможет посмотреть картинки этого чата. Видео и файлы — по желанию. Нажмите «Экспортировать».
+          </li>
+        ) : (
+          <li>
+            Снимите галочки «Фото», «Видео», «Файлы» — ИИ нужен текст. Формат — <b>«Машиночитаемый JSON»</b>. Нажмите «Экспортировать».
+          </li>
+        )}
+        {byPart && access?.folder ? (
+          <li>
+            Когда Telegram покажет папку выгрузки (ChatExport_…), нажмите здесь <b>«Выбрать папку выгрузки»</b> и выберите её. Можно выбрать и папку, где лежат несколько выгрузок, — загружу все.
+          </li>
+        ) : (
+          <li>
+            Когда Telegram покажет папку выгрузки, выберите здесь файл <b>result.json</b> из неё.
+          </li>
+        )}
       </ol>
       <p className="q-subtle">Все чаты сразу: Настройки → Продвинутые → «Экспорт данных из Telegram», отметьте «Личные чаты» и группы, формат JSON.</p>
       <input
@@ -742,18 +862,38 @@ function ExportLoader({ onLoaded }: { onLoaded: (added: ExportChat[]) => void })
           if (f) void load(f);
         }}
       />
-      <div className="q-row">
-        <button type="button" className="q-btn q-btn-primary" disabled={progress !== null} onClick={() => input.current?.click()}>
-          <Upload size={16} /> {progress !== null ? `Загружаю… ${progress}%` : 'Выбрать result.json'}
-        </button>
+      <div className="q-row tg-wrap">
+        {byPart && access?.folder && (
+          <button type="button" className="q-btn q-btn-primary" disabled={busy} onClick={() => void pick(true)}>
+            <FolderOpen size={16} /> Выбрать папку выгрузки
+          </button>
+        )}
+        {byPart ? (
+          <button type="button" className={access?.folder ? 'q-btn' : 'q-btn q-btn-primary'} disabled={busy} onClick={() => void pick(false)}>
+            <Upload size={16} /> {access?.folder ? 'Только result.json' : 'Выбрать result.json'}
+          </button>
+        ) : (
+          <button type="button" className="q-btn q-btn-primary" disabled={busy || !access} onClick={() => input.current?.click()}>
+            <Upload size={16} /> {progress !== null ? `Загружаю… ${progress}%` : 'Выбрать result.json'}
+          </button>
+        )}
       </div>
+      {job && running(job) && (
+        <div className="q-stack tg-progress" role="status" aria-live="polite">
+          <span className="q-muted">{jobLine(job)}</span>
+          {pct !== null && <progress max={100} value={pct} aria-label="Прочитано" />}
+        </div>
+      )}
       {error && (
         <p className="tg-error" role="alert">
           {error}
         </p>
       )}
       <p className="q-subtle">
-        <ShieldCheck size={12} /> Файл читается на этом ПК. Переписка хранится только в папке приложения, зашифрованная Windows, и не уходит на сервер Hub. Убрать её — во вкладке «Выгрузка».
+        <ShieldCheck size={12} />{' '}
+        {byPart
+          ? 'Выгрузка читается там, где лежит, на этом ПК. Переписка хранится только в папке приложения, зашифрованная Windows, и не уходит на сервер Hub. Картинки не копируются: ИИ смотрит их в папке выгрузки и только в чатах, которые вы откроете. Убрать — во вкладке «Выгрузка».'
+          : 'Файл читается на этом ПК. Переписка хранится только в папке приложения, зашифрованная Windows, и не уходит на сервер Hub. Убрать её — во вкладке «Выгрузка».'}
       </p>
     </div>
   );
@@ -813,7 +953,7 @@ function Exports({ onChanged, onAccess }: { onChanged: () => void; onAccess: () 
                   <div className="tg-grow">
                     <div className="tg-name">{c.title}</div>
                     <div className="q-subtle">
-                      {K.label} · {c.messages} сообщ.{c.firstAt && c.lastAt ? ` · ${day(c.firstAt)} — ${day(c.lastAt)}` : ''} · выгрузка от {day(c.exportedAt)} · {c.allowed ? 'ИИ читает' : 'закрыт для ИИ'}
+                      {K.label} · {c.messages} сообщ.{c.firstAt && c.lastAt ? ` · ${day(c.firstAt)} — ${day(c.lastAt)}` : ''} · выгрузка от {day(c.exportedAt)} · {c.withFiles ? 'с картинками' : 'только текст'} · {c.allowed ? 'ИИ читает' : 'закрыт для ИИ'}
                     </div>
                   </div>
                   <button type="button" className="q-btn" aria-label={`Убрать выгрузку «${c.title}»`} disabled={busy} onClick={() => void remove(c.id)}>

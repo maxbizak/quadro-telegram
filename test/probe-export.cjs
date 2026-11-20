@@ -1,23 +1,26 @@
 // «Выгрузка из Telegram Desktop» end to end, in a copy of Hub, with no keys, no sign-in and no Telegram, hidden window only:
 //   the real part from dist/ (the author mode) with the program's own bridges and the AI's bridge «Hub → this PC».
-//   1) the screen with no keys offers the export; result.json (test/fixtures — a sample in Telegram Desktop's format) is given to
-//      the file field (the stand-in of Windows' window) — the screen reads it here and hands it to the part in pieces;
+//   1) the screen with no keys offers the export; «Выбрать папку выгрузки» — the program's Windows window (its stand-in gives
+//      QUADRO_PROBE_FILES: a folder ChatExport_2026-11-20 with test/fixtures/result-chat.json and the picture of #412), the grant
+//      «to read»; the part reads result.json itself through the program, the screen follows the bar;
 //   2) «Без входа — по выгрузке…», the chat in «Доступ для ИИ» closed until the person allows it;
 //   3) as the AI (MCP over a key given this package): telegram_chats / telegram_search / telegram_messages read the export, marked
-//      «по выгрузке от …», the search's table data carries exportedAt; «Что читал ИИ» shows the reads;
-//   4) «Убрать все выгрузки» — the AI loses the chat at once.
+//      «по выгрузке от …», the search's table data carries exportedAt; telegram_file shows the picture of #412 read in the
+//      export's folder; «Что читал ИИ» shows the reads;
+//   4) «Выгрузка»: the chat «с картинками»; «Убрать все выгрузки» — the AI loses the chat at once.
 //
 //   QUADRO_PROBE_LOGIN=test_owner:<password> QUADRO_DEV_PACKAGES=<this folder>\dist QUADRO_PROBE_RELAY=1 PROBE_OUT=<folder> \
+//   QUADRO_PROBE_FILES=<…>\ChatExport_2026-11-20 (made by this probe if missing: PROBE_EXPORT_DIR) \
 //   PROBE_API=http://127.0.0.1:8891 electron <Hub>/apps/desktop/scripts/probe.cjs --addr apps.localhost --port 5291 \
 //     --path p/quadro.telegram --bridges --apps <empty folder> --steps test/probe-export.cjs
 /* eslint-disable */
-const { readFileSync } = require('node:fs');
+const { existsSync, readFileSync } = require('node:fs');
 const { join } = require('node:path');
 
 const OUT = process.env.PROBE_OUT || '.';
 const API = process.env.PROBE_API || 'http://127.0.0.1:8891';
-const SAMPLE = readFileSync(join(__dirname, 'fixtures', 'result-chat.json'), 'utf8');
-const EXPORTED = Date.parse('2026-11-20T09:30:00Z');
+/** The folder Windows' window «gives» (the program's stand-in reads QUADRO_PROBE_FILES). */
+const EXPORT_DIR = (process.env.QUADRO_PROBE_FILES || '').split(';')[0];
 
 module.exports = async (probe) => {
   const { win, js, wait, log } = probe;
@@ -66,20 +69,14 @@ module.exports = async (probe) => {
   await has('Нет ключей или не получается войти?', 60000);
   await inFrame(`(() => { const st = document.createElement('style'); st.textContent = '*,*::after{transition:none!important}'; document.head.append(st); return true; })()`);
   await shot(`${OUT}/export-offer.png`);
+  if (!EXPORT_DIR || !existsSync(join(EXPORT_DIR, 'result.json'))) throw new Error('QUADRO_PROBE_FILES — папка выгрузки с result.json');
   await click('Загрузить выгрузку');
   await has('Выгрузка из Telegram Desktop');
+  // This program reads picked files: the folder's button, not the file field of an older one.
+  await has('Выбрать папку выгрузки');
   await shot(`${OUT}/export-loader.png`);
-  // Windows' window stands in: the file given to the field as the person would pick it.
-  const given = await inFrame(`(() => {
-    const input = document.querySelector('input[type="file"]');
-    if (!input) return false;
-    const dt = new DataTransfer();
-    dt.items.add(new File([${JSON.stringify(SAMPLE)}], 'result.json', { type: 'application/json', lastModified: ${EXPORTED} }));
-    input.files = dt.files;
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
-  })()`);
-  if (!given) throw new Error('нет поля файла');
+  // Windows' window (the program's stand-in) gives the export's folder «to read»; the part reads it through the program.
+  await click('Выбрать папку выгрузки');
 
   // 2) The chats of the export, closed for the AI until allowed.
   await has('Без входа — по выгрузке из Telegram Desktop', 30000);
@@ -112,6 +109,11 @@ module.exports = async (probe) => {
   const read = await mcp(token, 'tools/call', { name: 'telegram_messages', arguments: { chat: 'UGC команда' } });
   log('MESSAGES', textOf(read).split('\n')[0]);
   if (!/по выгрузке от/.test(textOf(read)) || !/6 сообщ/.test(textOf(read))) throw new Error('telegram_messages не по выгрузке');
+  // The picture of #412, read by the part in the export's folder (where it lies), through the program and Hub to the AI.
+  const pic = await mcp(token, 'tools/call', { name: 'telegram_file', arguments: { chat: 'UGC команда', message: 412 } });
+  const images = (pic.result?.content || []).filter((c) => c.type === 'image');
+  log('FILE', textOf(pic).split('\n')[0], images.map((i) => `${i.mimeType} ${i.data.length}`).join(', '));
+  if (pic.result?.isError || images.length !== 1 || !/по выгрузке от/.test(textOf(pic))) throw new Error('telegram_file без картинки из папки выгрузки: ' + JSON.stringify(pic).slice(0, 300));
   await shot(`${OUT}/export-after-ai.png`);
 
   // «Что читал ИИ» — the reads came by themselves.
@@ -122,6 +124,7 @@ module.exports = async (probe) => {
   // 4) «Выгрузка» → «Убрать все выгрузки»: the AI loses the chat.
   await inFrame(`[...document.querySelectorAll('[role="tab"]')].find((t) => t.textContent.trim() === 'Выгрузка').click()`);
   await has('Загруженные чаты');
+  await has('с картинками');
   await shot(`${OUT}/export-tab.png`);
   await click('Убрать все выгрузки');
   await has('Нет ключей или не получается войти?', 30000);
@@ -131,5 +134,5 @@ module.exports = async (probe) => {
 
   await asPerson('PUT', '/me/packages/quadro.telegram/ai', { on: false });
   if (created.body.apiToken?.id) await asPerson('DELETE', `/account/tokens/${created.body.apiToken.id}`);
-  log('OK', 'выгрузка без ключей: экран, доступ, инструменты ИИ с пометкой, журнал, удаление');
+  log('OK', 'выгрузка без ключей: папка выбрана в окне Windows и прочитана частью, доступ, инструменты ИИ с пометкой, картинка из папки, журнал, удаление');
 };

@@ -101,7 +101,7 @@ describe('the reader: like the live client', () => {
     expect((await reader.search(peer, 'rbxm', { limit: 10 })).map((m) => m.id)).toEqual([430]);
     expect(await reader.search({ ...peer, id: '42' }, 'оплат', { limit: 10 })).toEqual([]);
     expect(await reader.message(peer, 415)).toMatchObject({ text: 'Оплатил, проверь' });
-    expect(await reader.download()).toBeNull();
+    expect(await reader.download(peer, 412, { maxBytes: 1000 })).toBeNull();
   });
 });
 

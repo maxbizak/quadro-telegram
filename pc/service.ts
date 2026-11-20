@@ -1,6 +1,6 @@
-import { extname } from 'node:path';
+import { extname, win32 } from 'node:path';
 import type { AllowedChat, JournalEntry, Store } from './store';
-import { EXPORT_MAX_CHARS, ExportError, ExportReader, exportDate, mergeExports, parseExport, type ExportChat } from './export';
+import { EXPORT_MAX_CHARS, ExportError, ExportReader, exportDate, folderDate, mergeExports, parseExport, type ExportChat, type ExportFileReader } from './export';
 import type { Downloaded, LoginState, Me, PeerRef, TgApi, TgChat, TgFactory, TgMessage } from './types';
 import { worksData } from './works';
 import { docxText } from './zip-text';
@@ -54,6 +54,7 @@ export class UserError extends Error {
 
 const obj = (x: unknown): Record<string, unknown> => (x && typeof x === 'object' ? (x as Record<string, unknown>) : {});
 const kb = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} КБ` : `${(n / 1048576).toFixed(1)} МБ`);
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** «2026-11-12 14:03» in the PC's time zone. */
 export function localTime(iso: string, offsetMin = -new Date(iso).getTimezoneOffset()): string {
@@ -108,8 +109,62 @@ export interface ApiKeys {
   apiHash: string;
 }
 
+/** The person's files through the program (pc.files.pick): Windows' own window, then reading where the files lie. */
+export interface PartFiles {
+  pick(o: { multiple?: boolean; folder?: boolean; read?: boolean; extensions?: string[]; title?: string }): Promise<string[]>;
+  read(path: string, o?: { offset?: number; length?: number }): Promise<{ data: Uint8Array; size: number; eof: boolean }>;
+  list(path: string, o?: { recursive?: boolean; after?: string }): Promise<{ items: Array<{ path: string; name: string; dir: boolean; size: number }>; more: boolean }>;
+}
+
+/** Reading an export the person picked: in the background, the screen follows it (importState). */
+export interface ImportJob {
+  id: string;
+  /** picking — Windows' window is open; reading — the part reads the files; then done, error, or cancelled (nothing picked). */
+  stage: 'picking' | 'reading' | 'done' | 'error' | 'cancelled';
+  /** The export's whole folder was asked (its pictures too), not only result.json. */
+  folder: boolean;
+  /** The export being read (its folder's name), which one of how many. */
+  name: string | null;
+  index: number;
+  files: number;
+  /** Bytes read of how many. */
+  read: number;
+  size: number;
+  added: ExportSummary[];
+  /** Exports of the folder that could not be read (an HTML one, a broken file) — the others are taken. */
+  skipped: Array<{ name: string; error: string }>;
+  chats: number;
+  error: string | null;
+}
+
+export interface ExportSummary {
+  id: string;
+  kind: ExportChat['kind'];
+  title: string;
+  exportedAt: string;
+  messages: number;
+  firstAt: string | null;
+  lastAt: string | null;
+  /** Its folder was given to read: the AI can open its pictures and text files. */
+  withFiles: boolean;
+}
+
+/** A path the program never gave this app: refused by a program that reads files, «нет такого действия» by an older one. */
+const PROBE_FILE = 'C:\\Quadro\\telegram\\probe\\result.json';
+const PROBE_DIR = 'C:\\Quadro\\telegram\\probe';
+/** One piece of reading a picked file (the program gives at most 4 MB). */
+const READ_PIECE = 4 * 1024 * 1024;
+/** The most of one result.json read (bytes; the text must also fit EXPORT_MAX_CHARS). */
+const EXPORT_MAX_BYTES = 600_000_000;
+/** In a folder of exports: so many of its folders looked into, so many exports taken at once. */
+const MAX_SUBFOLDERS = 60;
+const MAX_EXPORTS = 30;
+const NO_RESULT = 'В этой папке нет result.json: выберите папку, которую сделал Telegram Desktop (ChatExport_… или DataExport_…), — формат выгрузки «Машиночитаемый JSON»';
+
 export interface ServiceDeps {
   store: Store;
+  /** The person's files (pc.files.pick); none — the screen reads the file and hands it over (an older program). */
+  files?: PartFiles;
   factory: TgFactory;
   /** The publisher's keys («ключи Quadro»), when the platform gives them to the part; null — only the person's own. */
   publisherKeys?: () => ApiKeys | null;
@@ -141,8 +196,12 @@ export class TelegramService {
   private qr: QrFlow | null = null;
   /** The loaded exports (read once from the sealed file) and the reader over them. */
   private exportsCache: { chats: ExportChat[]; reader: ExportReader } | null = null;
-  /** A result.json coming from the screen in pieces (the screen reads the file; the part reads no file of the PC). */
+  /** A result.json coming from the screen in pieces (an older program: the screen reads the file, the part cannot). */
   private uploads = new Map<string, { parts: string[]; size: number; exportedAt: string; at: number }>();
+  /** The export the person picked, read in the background. */
+  private job: ImportJob | null = null;
+  /** What the program lets the part do with picked files (asked once). */
+  private fileRights: Promise<{ read: boolean; folder: boolean }> | null = null;
 
   constructor(private readonly d: ServiceDeps) {}
 
@@ -231,24 +290,187 @@ export class TelegramService {
       allowed: this.d.store.allowed().length,
       /** Loaded exports of Telegram Desktop: how many chats, the newest export's time. */
       exports: await this.exportsInfo(),
+      /** The program reads a picked file (read) and a picked folder (folder) for the part; else the screen reads result.json. */
+      files: await this.fileAccess(),
     };
   }
 
   // ——— Exports of Telegram Desktop (no sign-in, no keys) ———
 
   private async loadedExports(): Promise<{ chats: ExportChat[]; reader: ExportReader }> {
-    if (!this.exportsCache) {
-      const chats = await this.d.store.exports();
-      this.exportsCache = { chats, reader: new ExportReader(chats) };
-    }
-    return this.exportsCache;
+    if (!this.exportsCache) this.setExports(await this.d.store.exports());
+    return this.exportsCache!;
   }
+
+  private setExports(chats: ExportChat[]): void {
+    this.exportsCache = { chats, reader: new ExportReader(chats, this.readExportFile) };
+  }
+
+  /**
+   * A file of an export's folder for the AI, read where it lies — the program reads only inside the folder the person gave to
+   * read (never a program, never past it by a link). At most `maxBytes`.
+   */
+  private readonly readExportFile: ExportFileReader = async (path, maxBytes, signal) => {
+    const files = this.d.files;
+    if (!files) throw new UserError('Эта версия программы Quadro Hub не даёт приложению читать файлы выгрузки — владелец обновляет программу');
+    const out: Buffer[] = [];
+    for (let offset = 0; ; ) {
+      signal?.throwIfAborted();
+      let piece;
+      try {
+        piece = await files.read(path, { offset, length: Math.max(1, Math.min(READ_PIECE, maxBytes - offset)) });
+      } catch (e) {
+        throw new UserError(`Файл выгрузки не прочитать (${errText(e)}): если папку выгрузки переместили или удалили, владелец загружает её снова на экране приложения Telegram`);
+      }
+      if (offset === 0 && piece.size > maxBytes) throw new UserError(`Файл больше ${kb(maxBytes)} — его не читаю; он лежит на ПК владельца: ${path}`);
+      out.push(Buffer.from(piece.data));
+      offset += piece.data.length;
+      if (piece.eof || !piece.data.length || offset >= maxBytes) break;
+    }
+    return Buffer.concat(out);
+  };
 
   private async exportsInfo(): Promise<{ chats: number; exportedAt: string | null }> {
     const { chats } = await this.loadedExports();
     const newest = chats.map((c) => c.exportedAt).sort().at(-1) ?? null;
     return { chats: chats.length, exportedAt: newest };
   }
+
+  // ——— The export the person picks (the program reads it where it lies) ———
+
+  /** What this program lets the part do with the person's files: read a picked file; read a picked folder. */
+  private fileAccess(): Promise<{ read: boolean; folder: boolean }> {
+    const f = this.d.files;
+    if (!f) return Promise.resolve({ read: false, folder: false });
+    // An older program has no such action; this one refuses a path it never gave — the answer itself tells which.
+    const has = (call: () => Promise<unknown>) =>
+      Promise.resolve()
+        .then(call)
+        .then(
+          () => true,
+          (e) => !/Нет такого действия|is not a function/.test(errText(e)),
+        );
+    this.fileRights ??= Promise.all([has(() => f.read(PROBE_FILE, { offset: 0, length: 1 })), has(() => f.list(PROBE_DIR))]).then(([read, folder]) => ({ read, folder: read && folder }));
+    return this.fileRights;
+  }
+
+  /** For the screen: what can be picked, and the export being read (or the last one read) — the screen follows it. */
+  async importState() {
+    return { access: await this.fileAccess(), job: this.job ? { ...this.job } : null };
+  }
+
+  /**
+   * «Выбрать папку выгрузки» (folder) or «Выбрать result.json»: Windows' own window of the program; the part then reads the export
+   * where it lies, in the background (a 2 GB result.json takes a while) — the screen follows importState.
+   */
+  async importPick(x: unknown): Promise<ImportJob> {
+    if (this.job && (this.job.stage === 'picking' || this.job.stage === 'reading')) return { ...this.job };
+    const access = await this.fileAccess();
+    if (!access.read || !this.d.files) throw new UserError('Эта версия программы Quadro Hub не даёт приложению прочитать выбранный файл: обновите программу или выберите result.json кнопкой «Выбрать файл»', 'NO_FILES');
+    if (!this.d.store.canSeal) throw new UserError('Программа Quadro Hub не умеет шифровать данные приложения: обновите программу');
+    const folder = obj(x).folder !== false && access.folder;
+    const job: ImportJob = { id: `${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, stage: 'picking', folder, name: null, index: 0, files: 0, read: 0, size: 0, added: [], skipped: [], chats: 0, error: null };
+    this.job = job;
+    void this.runImport(job, this.d.files);
+    return { ...job };
+  }
+
+  private async runImport(job: ImportJob, files: PartFiles): Promise<void> {
+    try {
+      const picked = job.folder
+        ? await files.pick({ folder: true, read: true, title: 'Папка выгрузки Telegram Desktop' })
+        : await files.pick({ multiple: false, extensions: ['json'], title: 'result.json из папки выгрузки Telegram Desktop' });
+      if (this.job !== job) return;
+      const first = picked[0];
+      if (!first) {
+        job.stage = 'cancelled';
+        return;
+      }
+      const targets = job.folder ? await this.exportsIn(files, first) : [{ file: first, folder: null, name: win32.basename(win32.dirname(first)) }];
+      if (!targets.length) throw new UserError(NO_RESULT);
+      job.stage = 'reading';
+      job.files = targets.length;
+      const read: ExportChat[][] = [];
+      for (const [i, t] of targets.entries()) {
+        job.index = i;
+        job.name = t.name;
+        try {
+          const text = await this.readText(files, t.file, job);
+          read.push(parseExport(text, folderDate(t.folder ?? win32.dirname(t.file)), { folder: t.folder }));
+        } catch (e) {
+          if (targets.length === 1 || this.job !== job) throw e;
+          job.skipped.push({ name: t.name, error: errText(e) });
+        }
+      }
+      if (!read.length) throw new UserError(job.skipped[0]?.error ?? 'В выгрузке нет сообщений');
+      // Older exports first: a chat exported again (in another folder) — its newest copy stays.
+      read.sort((a, b) => a[0]!.exportedAt.localeCompare(b[0]!.exportedAt));
+      const { chats } = await this.loadedExports();
+      const all = read.reduce((acc, fresh) => mergeExports(acc, fresh), chats);
+      await this.d.store.saveExports(all);
+      this.setExports(all);
+      const ids = new Set(read.flat().map((c) => c.id));
+      job.added = all.filter((c) => ids.has(c.id)).map((c) => this.exportSummary(c));
+      job.chats = all.length;
+      job.stage = 'done';
+    } catch (e) {
+      if (this.job !== job) return;
+      job.stage = 'error';
+      job.error = e instanceof UserError || e instanceof ExportError ? e.message : `Не удалось прочитать выгрузку: ${errText(e)}`;
+    }
+  }
+
+  /** The exports in a folder the person gave: its own result.json, or those of its folders one level down (ChatExport_… each). */
+  private async exportsIn(files: PartFiles, folder: string): Promise<Array<{ file: string; folder: string; name: string }>> {
+    const listAll = async (dir: string, pages: number) => {
+      const items: Awaited<ReturnType<PartFiles['list']>>['items'] = [];
+      let after: string | undefined;
+      for (let i = 0; i < pages; i++) {
+        const r = await files.list(dir, after ? { after } : {});
+        items.push(...r.items);
+        if (!r.more || !r.items.length) break;
+        after = r.items.at(-1)!.path;
+      }
+      return items;
+    };
+    const isResult = (i: { name: string; dir: boolean }) => !i.dir && i.name.toLowerCase() === 'result.json';
+    const top = await listAll(folder, 10);
+    const here = top.find(isResult);
+    if (here) return [{ file: here.path, folder, name: win32.basename(folder) }];
+    const out: Array<{ file: string; folder: string; name: string }> = [];
+    for (const d of top.filter((i) => i.dir).slice(0, MAX_SUBFOLDERS)) {
+      const r = (await listAll(d.path, 3).catch(() => [])).find(isResult);
+      if (r) out.push({ file: r.path, folder: d.path, name: d.name });
+      if (out.length >= MAX_EXPORTS) break;
+    }
+    return out;
+  }
+
+  /** A result.json read where it lies, piece by piece (its text decoded across the pieces' edges). */
+  private async readText(files: PartFiles, path: string, job: ImportJob): Promise<string> {
+    const decoder = new TextDecoder('utf-8');
+    const parts: string[] = [];
+    let chars = 0;
+    for (let offset = 0; ; ) {
+      if (this.job !== job) throw new UserError('Чтение выгрузки остановлено');
+      const piece = await files.read(path, { offset, length: READ_PIECE });
+      if (offset === 0) {
+        if (piece.size > EXPORT_MAX_BYTES) throw new ExportError('Выгрузка слишком большая: выгрузите нужные чаты по одному');
+        job.size += piece.size;
+      }
+      const text = decoder.decode(piece.data, { stream: true });
+      chars += text.length;
+      if (chars > EXPORT_MAX_CHARS) throw new ExportError('Выгрузка слишком большая: выгрузите нужные чаты по одному');
+      parts.push(text);
+      offset += piece.data.length;
+      job.read += piece.data.length;
+      if (piece.eof || !piece.data.length) break;
+    }
+    parts.push(decoder.decode());
+    return parts.join('');
+  }
+
+  // ——— An older program: the screen reads result.json and hands its text in pieces ———
 
   /** A result.json begins: its size (characters) and the file's time. */
   importStart(x: unknown): { id: string } {
@@ -292,12 +514,12 @@ export class TelegramService {
     const { chats } = await this.loadedExports();
     const all = mergeExports(chats, fresh);
     await this.d.store.saveExports(all);
-    this.exportsCache = { chats: all, reader: new ExportReader(all) };
+    this.setExports(all);
     return { added: fresh.map((c) => this.exportSummary(c)), chats: all.length };
   }
 
-  private exportSummary(c: ExportChat) {
-    return { id: c.id, kind: c.kind, title: c.title, exportedAt: c.exportedAt, messages: c.messages.length, firstAt: c.messages[0]?.date ?? null, lastAt: c.messages.at(-1)?.date ?? null };
+  private exportSummary(c: ExportChat): ExportSummary {
+    return { id: c.id, kind: c.kind, title: c.title, exportedAt: c.exportedAt, messages: c.messages.length, firstAt: c.messages[0]?.date ?? null, lastAt: c.messages.at(-1)?.date ?? null, withFiles: !!c.folder };
   }
 
   /** The loaded exports' chats for the screen, each with its mark. */
@@ -312,7 +534,7 @@ export class TelegramService {
     const { chats } = await this.loadedExports();
     const left = id ? chats.filter((c) => c.id !== id) : [];
     await this.d.store.saveExports(left);
-    this.exportsCache = { chats: left, reader: new ExportReader(left) };
+    this.setExports(left);
     const gone = new Set(chats.filter((c) => !left.includes(c)).map((c) => c.id));
     this.d.store.setAllowed(this.d.store.allowed().filter((a) => !(a.source === 'export' && gone.has(a.id))));
     return { chats: left.length };
@@ -527,7 +749,7 @@ export class TelegramService {
       ...live.map(({ peer: _peer, ...chat }) => ({ ...chat, allowed: allowed.has(chat.id) })),
       ...exported
         .filter((c) => !liveIds.has(c.id))
-        .map((c) => ({ id: c.id, kind: c.kind, title: c.title, lastAt: c.messages.at(-1)?.date, source: 'export' as const, exportedAt: c.exportedAt, messages: c.messages.length, allowed: allowed.has(c.id) })),
+        .map((c) => ({ id: c.id, kind: c.kind, title: c.title, lastAt: c.messages.at(-1)?.date, source: 'export' as const, exportedAt: c.exportedAt, messages: c.messages.length, withFiles: !!c.folder, allowed: allowed.has(c.id) })),
     ];
   }
 
@@ -724,17 +946,22 @@ export class TelegramService {
       const c = await this.readerFor(chat);
       const m = await c.message(chat.peer, id);
       if (!m) throw new UserError('Нет такого сообщения в этом чате');
-      if (chat.source === 'export') {
-        // An export's files lie only in its folder on the owner's PC: what they are and where, never their content.
+      const fromExport = chat.source === 'export';
+      if (fromExport && !m.attachments.some((a) => a.downloadable)) {
+        // Its files are opened only from the export's folder the person gave to read: here — what they are and where.
         if (!m.attachments.length) throw new UserError('У этого сообщения нет файла или картинки');
+        const withFolder = !!(await this.loadedExports()).reader.chat(chat.id)?.folder;
         const lines = m.attachments.map((a) => `- ${KIND_WORD[a.kind] ?? a.kind}${a.name ? ` «${a.name}»` : ''}${a.size ? `, ${kb(a.size)}` : ''}${a.title ? ` «${a.title}»` : ''}${a.description ? ` — ${a.description}` : ''}`);
-        const text = [`Сообщение #${id} в чате «${chat.title}» (${await this.exportNote(chat)}):`, ...lines, 'Файлы выгрузки ИИ не открывает: они только в папке выгрузки на ПК владельца — попросите его посмотреть.'].join('\n');
+        const tail = withFolder
+          ? 'Этого файла нет в папке выгрузки (он в неё не вошёл): владелец может открыть его в Telegram.'
+          : 'Файлы этой выгрузки ИИ не открывает: владелец загрузил только result.json. Чтобы ИИ видел картинки и файлы, он выбирает на экране приложения Telegram всю папку выгрузки.';
+        const text = [`Сообщение #${id} в чате «${chat.title}» (${await this.exportNote(chat)}):`, ...lines, tail].join('\n');
         return { answer: { text, notice: `ИИ спросил о файле из выгрузки чата «${chat.title}»` }, entry: { chats: [chat.title], messages: 0, files: 0 } };
       }
       const att = m.attachments.find((a) => a.downloadable);
       if (!att) throw new UserError('У этого сообщения нет файла или картинки');
-      const done = (answer: McpAnswer, files = 1) => ({ answer: { ...answer, notice: `ИИ открыл файл из чата «${chat.title}»` }, entry: { chats: [chat.title], messages: 0, files } });
-      const about = `Сообщение #${id} в чате «${chat.title}»: ${KIND_WORD[att.kind] ?? att.kind}${att.name ? ` «${att.name}»` : ''}${att.size ? `, ${kb(att.size)}` : ''}`;
+      const done = (answer: McpAnswer, files = 1) => ({ answer: { ...answer, notice: `ИИ открыл файл из ${fromExport ? 'выгрузки ' : ''}чата «${chat.title}»` }, entry: { chats: [chat.title], messages: 0, files } });
+      const about = `Сообщение #${id} в чате «${chat.title}»${fromExport ? ` (${await this.exportNote(chat)})` : ''}: ${KIND_WORD[att.kind] ?? att.kind}${att.name ? ` «${att.name}»` : ''}${att.size ? `, ${kb(att.size)}` : ''}`;
       const ext = extname(att.name ?? '').toLowerCase();
       const isImage = att.kind === 'photo' || (att.kind === 'image' && IMAGE_MIME.has(att.mime ?? '')) || (att.kind === 'webpage' && att.downloadable);
       const isText = (att.mime ?? '').startsWith('text/') || TEXT_EXT.has(ext) || /json|xml|csv/.test(att.mime ?? '');
@@ -759,6 +986,11 @@ export class TelegramService {
       if (att.kind === 'video' || att.kind === 'document' || att.kind === 'sticker') {
         const thumb = await c.download(chat.peer, id, { maxBytes: LIMITS.imageBytes, thumb: true }).catch(() => null);
         if (thumb) images.push({ data: thumb.bytes.toString('base64'), mimeType: 'image/jpeg' });
+      }
+      if (fromExport) {
+        // The file already lies on the owner's PC, in the export's folder: told where, never copied.
+        const where = await (await this.loadedExports()).reader.fileOf(chat.peer, id);
+        return done({ text: `${about}. Как текст его не прочитать — он лежит на ПК владельца в папке выгрузки: ${where}${images.length ? '. Превью ниже.' : ''}`, ...(images.length ? { images } : {}), data: { path: where, mime: att.mime ?? null, size: att.size ?? null } }, images.length);
       }
       if (att.size && att.size > LIMITS.saveBytes) {
         return done({ text: `${about}. Файл больше ${kb(LIMITS.saveBytes)} — его не скачиваю; владелец может открыть его в Telegram.${images.length ? ' Превью ниже.' : ''}`, ...(images.length ? { images } : {}) }, images.length);

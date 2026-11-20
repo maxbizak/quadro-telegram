@@ -1,10 +1,13 @@
-import type { AttachmentKind, ChatKind, PeerRef, ReadOptions, SearchOptions, TgAttachment, TgMessage } from './types';
+import { win32 } from 'node:path';
+import type { AttachmentKind, ChatKind, Downloaded, PeerRef, ReadOptions, SearchOptions, TgAttachment, TgMessage } from './types';
 
 // «Выгрузка из Telegram Desktop» — chats without signing in and without keys: Telegram Desktop → a chat → ⋮ → «Экспорт истории
-// чата» (or Настройки → Продвинутые → «Экспорт данных из Telegram»), format «Машиночитаемый JSON». The person picks its
-// result.json on the screen; the screen reads it on this PC and hands its text to the part (a part reads no file of the PC
-// itself — Node's permission model), the part reads it here into the same messages the live client gives, and keeps them sealed
-// by Windows in its own folder until the person removes them. Nothing goes to Hub's server.
+// чата» (or Настройки → Продвинутые → «Экспорт данных из Telegram»), format «Машиночитаемый JSON». The person picks the export's
+// folder (or its result.json) in Windows' own window; the part reads it where it lies through the program (pc.files.pick +
+// files.read; with an older program the screen reads the file and hands its text in pieces), reads it here into the same
+// messages the live client gives, and keeps them sealed by Windows in its own folder until the person removes them. A folder
+// given to read also lets the AI see the export's pictures and text files (read where they lie, never copied). Nothing goes to
+// Hub's server.
 //
 // The format (Telegram Desktop's export_output_json): one chat — { name, type, id, messages: [...] }; all data —
 // { chats: { list: [chat…] }, left_chats: { list: [chat…] }, … }. A message: { id, type: 'message' | 'service', date,
@@ -18,8 +21,10 @@ export interface ExportChat {
   id: string;
   kind: ChatKind;
   title: string;
-  /** When the export was made (the file's time), ISO. */
+  /** When the export was made (its folder's date, the file's time or its newest message), ISO. */
   exportedAt: string;
+  /** The export's folder on this PC when the person gave it to read: its files can be opened for the AI. */
+  folder?: string | null;
   messages: TgMessage[];
 }
 
@@ -89,11 +94,27 @@ const MEDIA_KIND: Record<string, AttachmentKind> = {
 
 const baseName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
-/** What the message carries: a photo, a file (its name, kind, size, where it lies in the export's folder), a poll, a contact, a place. */
-function attachmentsOf(m: Record<string, unknown>): TgAttachment[] {
+/** A path inside the export's folder as result.json gives it («photos/photo_1@….jpg»); anything leading out of it — null. */
+export function insidePath(raw: unknown): string | null {
+  if (typeof raw !== 'string' || !raw || raw.length > 500 || NOT_INCLUDED.test(raw) || raw.includes('\0')) return null;
+  if (/^[a-z]:|^[\\/]/i.test(raw)) return null;
+  const parts = raw.split(/[\\/]+/);
+  return parts.some((x) => x === '..' || x === '.' || x === '') ? null : parts.join('\\');
+}
+
+/**
+ * What the message carries: a photo, a file (its name, kind, size, where it lies in the export's folder), a poll, a contact, a place.
+ * `files` — the folder was given to read: an included file can be opened for the AI.
+ */
+function attachmentsOf(m: Record<string, unknown>, files: boolean): TgAttachment[] {
   const out: TgAttachment[] = [];
   const where = (path: string) => (NOT_INCLUDED.test(path) ? 'не вошёл в выгрузку' : `в папке выгрузки: ${path}`);
-  if (typeof m.photo === 'string') out.push({ kind: 'photo', mime: 'image/jpeg', ...(NOT_INCLUDED.test(m.photo) ? {} : { name: baseName(m.photo) }), description: where(m.photo), downloadable: false });
+  const inside = (path: unknown): Pick<TgAttachment, 'path' | 'thumbPath' | 'downloadable'> => {
+    const p = files ? insidePath(path) : null;
+    const thumb = files ? insidePath(m.thumbnail) : null;
+    return p ? { path: p, ...(thumb ? { thumbPath: thumb } : {}), downloadable: true } : { downloadable: false };
+  };
+  if (typeof m.photo === 'string') out.push({ kind: 'photo', mime: 'image/jpeg', ...(NOT_INCLUDED.test(m.photo) ? {} : { name: baseName(m.photo) }), ...(typeof m.photo_file_size === 'number' ? { size: m.photo_file_size } : {}), description: where(m.photo), ...inside(m.photo) });
   if (typeof m.file === 'string') {
     const kind = MEDIA_KIND[str(m.media_type)] ?? (str(m.mime_type).startsWith('image/') ? 'image' : 'document');
     const name = str(m.file_name) || (NOT_INCLUDED.test(m.file) ? '' : baseName(m.file));
@@ -104,7 +125,7 @@ function attachmentsOf(m: Record<string, unknown>): TgAttachment[] {
       ...(typeof m.file_size === 'number' ? { size: m.file_size } : {}),
       ...(kind === 'sticker' && str(m.sticker_emoji) ? { title: str(m.sticker_emoji) } : {}),
       description: where(m.file),
-      downloadable: false,
+      ...inside(m.file),
     });
   }
   const poll = m.poll as { question?: unknown } | undefined;
@@ -142,7 +163,7 @@ function timeOf(unix: unknown, local: unknown): string | null {
   return Number.isFinite(t) ? new Date(t).toISOString() : null;
 }
 
-function messageOf(raw: unknown): TgMessage | null {
+function messageOf(raw: unknown, files: boolean): TgMessage | null {
   if (!raw || typeof raw !== 'object') return null;
   const m = raw as Record<string, unknown>;
   const id = Number(m.id);
@@ -159,7 +180,7 @@ function messageOf(raw: unknown): TgMessage | null {
     from: fromName || fromId ? { id: fromId, name: fromName || 'Удалённый аккаунт' } : null,
     text,
     links,
-    attachments: attachmentsOf(m),
+    attachments: attachmentsOf(m, files),
     ...(Number.isInteger(m.reply_to_message_id) ? { replyTo: m.reply_to_message_id as number } : {}),
     ...(str(m.forwarded_from) ? { forwardedFrom: str(m.forwarded_from) } : {}),
   };
@@ -170,25 +191,26 @@ function messageOf(raw: unknown): TgMessage | null {
   return out;
 }
 
-function chatOf(raw: unknown, exportedAt: string): ExportChat | null {
+function chatOf(raw: unknown, exportedAt: string, folder: string | null): ExportChat | null {
   if (!raw || typeof raw !== 'object') return null;
   const c = raw as Record<string, unknown>;
   const type = str(c.type);
   const kind = KIND_OF[type];
   const id = markedId(type, c.id);
   if (!kind || !id || !Array.isArray(c.messages)) return null;
-  const messages = c.messages.map(messageOf).filter((m): m is TgMessage => !!m).sort((a, b) => a.id - b.id);
+  const messages = c.messages.map((m) => messageOf(m, !!folder)).filter((m): m is TgMessage => !!m).sort((a, b) => a.id - b.id);
   const title = str(c.name) || (type === 'saved_messages' ? 'Избранное' : 'Без названия');
-  return { id, kind, title, exportedAt, messages };
+  return { id, kind, title, exportedAt, ...(folder ? { folder } : {}), messages };
 }
 
 export class ExportError extends Error {}
 
 /**
- * The chats of a result.json: one chat's export or the whole data's (chats and left chats). `exportedAt` — the file's time.
+ * The chats of a result.json: one chat's export or the whole data's (chats and left chats). `exportedAt` — when it was made; null —
+ * its newest message's time. `folder` — the export's folder given to read (its files can then be opened for the AI).
  * Not an export of Telegram Desktop in JSON (an HTML export, another file) — an error in words.
  */
-export function parseExport(text: string, exportedAt: string): ExportChat[] {
+export function parseExport(text: string, exportedAt: string | null, o: { folder?: string | null } = {}): ExportChat[] {
   if (text.length > EXPORT_MAX_CHARS) throw new ExportError('Выгрузка слишком большая: выгрузите нужные чаты по одному и без фото, видео и файлов');
   if (/^\s*</.test(text)) throw new ExportError('Это выгрузка в HTML: в Telegram Desktop выберите формат «Машиночитаемый JSON» и выгрузите снова');
   let data: unknown;
@@ -202,10 +224,30 @@ export function parseExport(text: string, exportedAt: string): ExportChat[] {
     ? [d]
     : [d.chats, d.left_chats].flatMap((x) => (x && typeof x === 'object' && Array.isArray((x as { list?: unknown }).list) ? ((x as { list: unknown[] }).list ?? []) : []));
   if (!list.length) throw new ExportError('В файле нет чатов: это не result.json выгрузки Telegram Desktop (или выгрузка без «Личных чатов» и групп)');
-  const chats = list.map((c) => chatOf(c, exportedAt)).filter((c): c is ExportChat => !!c && c.messages.length > 0);
+  const chats = list.map((c) => chatOf(c, exportedAt ?? '', o.folder ?? null)).filter((c): c is ExportChat => !!c && c.messages.length > 0);
   if (!chats.length) throw new ExportError('В выгрузке нет сообщений');
+  if (!exportedAt) {
+    const newest = chats.map((c) => c.messages.at(-1)!.date).sort().at(-1)!;
+    for (const c of chats) c.exportedAt = newest;
+  }
   return chats;
 }
+
+/**
+ * When an export was made, by its folder's name: Telegram Desktop names it «ChatExport_2026-11-20» or «DataExport_2026-11-20 (2)»;
+ * noon of that day (the date is what is shown). Another name — null.
+ */
+export function folderDate(folder: string): string | null {
+  const m = /(?:Chat|Data)Export_(\d{4})-(\d{2})-(\d{2})/i.exec(win32.basename(folder));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12);
+  return Number.isNaN(d.getTime()) || d.getMonth() !== Number(m[2]) - 1 ? null : d.toISOString();
+}
+
+/** Reads a file of an export's folder for the AI (through the program, where it lies): at most `maxBytes`. */
+export type ExportFileReader = (path: string, maxBytes: number, signal?: AbortSignal) => Promise<Buffer>;
+
+const MIME_OF: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.txt': 'text/plain', '.json': 'application/json' };
 
 /** New chats over the old ones: a chat exported again replaces its older copy (by id). */
 export function mergeExports(old: ExportChat[], fresh: ExportChat[]): ExportChat[] {
@@ -218,7 +260,11 @@ const fold = (s: string) => s.toLowerCase().replace(/ё/g, 'е');
 /** Reading an export like the live client (the same answers), only its chats: `peer.id` — the chat's id. */
 export class ExportReader {
   private readonly byId: Map<string, ExportChat>;
-  constructor(chats: ExportChat[]) {
+  constructor(
+    chats: ExportChat[],
+    /** The program's reading of a folder the person gave; none — the export's files are only told, never opened. */
+    private readonly readFile?: ExportFileReader,
+  ) {
     this.byId = new Map(chats.map((c) => [c.id, c]));
   }
 
@@ -261,9 +307,26 @@ export class ExportReader {
     return this.messages(peer).find((m) => m.id === id) ?? null;
   }
 
-  /** The export's files are only in its folder on the PC: nothing is fetched. */
-  async download(): Promise<null> {
-    return null;
+  /** Where an export's file lies on this PC (its folder given to read), or null. */
+  async fileOf(peer: PeerRef, id: number): Promise<string | null> {
+    const chat = this.byId.get(peer.id);
+    const att = (await this.message(peer, id))?.attachments.find((a) => a.downloadable && a.path);
+    return chat?.folder && att?.path ? win32.join(chat.folder, att.path) : null;
+  }
+
+  /**
+   * A file of the export read where it lies in its folder (given to read): the picture or file itself, or its preview. Without
+   * the folder (only result.json was picked) or the program's reading — null: the file is only told.
+   */
+  async download(peer: PeerRef, id: number, o: { maxBytes: number; thumb?: boolean; signal?: AbortSignal } = { maxBytes: 0 }): Promise<Downloaded | null> {
+    const chat = this.byId.get(peer.id);
+    const att = (await this.message(peer, id))?.attachments.find((a) => a.downloadable && a.path);
+    const rel = o.thumb ? att?.thumbPath : att?.path;
+    if (!chat?.folder || !att || !rel || !this.readFile) return null;
+    const bytes = await this.readFile(win32.join(chat.folder, rel), o.maxBytes, o.signal);
+    const ext = win32.extname(rel).toLowerCase();
+    const mime = o.thumb ? 'image/jpeg' : att.mime && att.mime !== 'application/octet-stream' ? att.mime : (MIME_OF[ext] ?? 'application/octet-stream');
+    return { bytes, mime, name: att.name ?? win32.basename(rel), kind: att.kind };
   }
 }
 
