@@ -102,7 +102,7 @@ npm run typecheck
 - `test/probe-publisher-dev.cjs` — настоящая часть в режиме автора с выдуманными `dist/publisher.dev.json`: экран без шага
   ключей, Telegram отказывает выдуманным ключам, api_id издателя на экране нет. После проверки файл удалить.
 
-pc-sdk — как в документации автора: `npm i -D https://quadro-metaverse.site/pkg-sdk/v1/pc-sdk-0.1.0.tgz`.
+pc-sdk — как в документации автора: `npm i -D https://quadro-metaverse.site/pkg-sdk/v1/pc-sdk-0.1.3.tgz`. Сайт хранит нынешнюю версию и две прошлые: когда выходит новая, адрес в package.json и package-lock меняют, иначе `npm ci` в CI получит 404.
 
 ## Выпуск из CI
 
