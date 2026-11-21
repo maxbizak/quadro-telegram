@@ -25,6 +25,6 @@ jobs:
       - run: npm ci && npm run build
       - name: qhapp
         run: |
-          curl -fsSLO https://quadro-metaverse.site/pkg-sdk/qhapp/v1/qhapp-1.0.10.mjs
-          echo "9f47845f2eabe6d2bab0518a820e6a4acc705310778e62682a51cb0e138b1b90  qhapp-1.0.10.mjs" | sha256sum -c -
-      - run: node qhapp-1.0.10.mjs ci-publish dist --hub https://quadro-metaverse.site
+          curl -fsSLO https://quadro-metaverse.site/pkg-sdk/qhapp/v1/qhapp-1.0.13.mjs
+          echo "028ece1efa613ca97397e07cc3b47378a875f3140510e68ee36fbcc155bf1412  qhapp-1.0.13.mjs" | sha256sum -c -
+      - run: node qhapp-1.0.13.mjs ci-publish dist --hub https://quadro-metaverse.site

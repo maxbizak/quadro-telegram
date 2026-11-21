@@ -106,7 +106,7 @@ pc-sdk — как в документации автора: `npm i -D https://qu
 
 ## Выпуск из CI
 
-Тег `v<версия>` (та же, что в `manifest.json`) запускает `.github/workflows/release.yml`: `npm ci`, сборка, `qhapp-1.0.10.mjs`
+Тег `v<версия>` (та же, что в `manifest.json`) запускает `.github/workflows/release.yml`: `npm ci`, сборка, `qhapp-1.0.13.mjs`
 со сверкой sha256 и `ci-publish dist --hub https://quadro-metaverse.site` — без ключей в репозитории и секретах. Доверие
 этому workflow владелец издателя ставит в «Каталог → Опубликовать → Выпуск из CI». Ручная подпись ниже — запасной путь.
 
