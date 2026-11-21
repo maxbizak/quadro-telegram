@@ -13,7 +13,8 @@ export interface StubFiles extends PartFiles {
   answer: string[];
 }
 
-export function stubFiles(o: { piece?: number; answer?: string[] } = {}): StubFiles {
+/** `mtime` — a program 1.0.106+ that tells when files were written (in list and stat); without it — 1.0.105, which does not. */
+export function stubFiles(o: { piece?: number; answer?: string[]; mtime?: boolean } = {}): StubFiles {
   const grants = new Map<string, 'in' | 'dir-in'>();
   const calls: string[] = [];
   const piece = o.piece ?? 63;
@@ -51,8 +52,23 @@ export function stubFiles(o: { piece?: number; answer?: string[] } = {}): StubFi
       const p = resolve(path);
       if (grants.get(p) !== 'dir-in' && !inside(p)) throw new Error('Эта папка приложению не открыта');
       const entries = readdirSync(p, { withFileTypes: true }).sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
-      return { items: entries.map((e) => ({ path: join(p, e.name), name: e.name, dir: e.isDirectory(), size: e.isFile() ? statSync(join(p, e.name)).size : 0 })), more: false };
+      return {
+        items: entries.map((e) => {
+          const st = statSync(join(p, e.name));
+          return { path: join(p, e.name), name: e.name, dir: e.isDirectory(), size: e.isFile() ? st.size : 0, ...(o.mtime ? { mtime: st.mtime.toISOString() } : {}) };
+        }),
+        more: false,
+      };
     },
+    ...(o.mtime
+      ? {
+          async stat(path: string) {
+            calls.push(`stat ${path}`);
+            if (!inside(path)) throw new Error('Этот файл приложению не открыт');
+            return { exists: true, mtime: statSync(path).mtime.toISOString() };
+          },
+        }
+      : {}),
   };
   return self;
 }

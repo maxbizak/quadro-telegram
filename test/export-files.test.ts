@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, utimesSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { folderDate, insidePath, parseExport } from '../pc/export';
-import { TelegramService, type ImportJob, type PartFiles } from '../pc/service';
+import { exportTime, TelegramService, type ImportJob, type PartFiles } from '../pc/service';
 import { Store } from '../pc/store';
 import { fakeSealer, stubFactory } from './stub-tg';
 import { oldProgramFiles, stubFiles } from './stub-files';
@@ -152,6 +152,24 @@ describe('the part reads the export where it lies', () => {
     await s.service.importPick({ folder: true });
     expect(await finished(s.service)).toMatchObject({ stage: 'cancelled' });
     expect(await s.service.exportsList()).toEqual([]);
+  });
+
+  it('a program that tells when result.json was written (1.0.106+): that time is the export\'s, for a folder and for result.json alone', async () => {
+    const written = new Date(2026, 10, 20, 21, 47, 5);
+    utimesSync(join(exportDir, 'result.json'), written, written);
+    for (const folder of [true, false]) {
+      const files = stubFiles({ answer: [folder ? exportDir : join(exportDir, 'result.json')], piece: 4096, mtime: true });
+      const s = setup(files);
+      await s.service.importPick({ folder });
+      const job = await finished(s.service);
+      expect(job.added).toEqual([expect.objectContaining({ title: 'UGC команда', exportedAt: written.toISOString() })]);
+      if (!folder) expect(files.calls).toContain(`stat ${join(exportDir, 'result.json')}`);
+    }
+    // No time, a time in the future or before Telegram had JSON exports — the folder's name, then the newest message.
+    expect(exportTime(undefined, exportDir)).toBe(new Date(2026, 10, 20, 12).toISOString());
+    expect(exportTime(new Date(Date.now() + 3 * 86_400_000).toISOString(), exportDir)).toBe(new Date(2026, 10, 20, 12).toISOString());
+    expect(exportTime('2001-01-01T00:00:00.000Z', 'D:\\Выгрузки')).toBeNull();
+    expect(exportTime('не время', 'D:\\Выгрузки')).toBeNull();
   });
 
   it('only result.json: text only — the AI is told the person can give the whole folder for pictures', async () => {

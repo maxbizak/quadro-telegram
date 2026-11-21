@@ -1,7 +1,7 @@
 {
   "name": "quadro-telegram",
   "private": true,
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "«Telegram» — пакет Quadro Hub (quadro.telegram): ИИ владельца читает выбранные им чаты Telegram; клиент MTProto на ПК",
   "type": "module",
   "scripts": {

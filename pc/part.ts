@@ -26,6 +26,7 @@ function filesOf(host: Host): PartFiles | undefined {
     pick: (o) => f.pick(o),
     read: (path, o) => (typeof f.read === 'function' ? f.read(path, o) : Promise.reject(new Error('Нет такого действия: files.read'))),
     list: (path, o) => (typeof f.list === 'function' ? f.list(path, o) : Promise.reject(new Error('Нет такого действия: files.list'))),
+    ...(typeof f.stat === 'function' ? { stat: (path: string) => f.stat(path) } : {}),
   };
 }
 

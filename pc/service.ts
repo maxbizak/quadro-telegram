@@ -113,7 +113,21 @@ export interface ApiKeys {
 export interface PartFiles {
   pick(o: { multiple?: boolean; folder?: boolean; read?: boolean; extensions?: string[]; title?: string }): Promise<string[]>;
   read(path: string, o?: { offset?: number; length?: number }): Promise<{ data: Uint8Array; size: number; eof: boolean }>;
-  list(path: string, o?: { recursive?: boolean; after?: string }): Promise<{ items: Array<{ path: string; name: string; dir: boolean; size: number }>; more: boolean }>;
+  /** `mtime` — when a file was last written (program 1.0.106+; an older one gives none). */
+  list(path: string, o?: { recursive?: boolean; after?: string }): Promise<{ items: Array<{ path: string; name: string; dir: boolean; size: number; mtime?: string }>; more: boolean }>;
+  /** A picked file's facts (its `mtime` since program 1.0.106). */
+  stat?(path: string): Promise<{ exists: boolean; mtime?: string | null }>;
+}
+
+/**
+ * When an export was made: the time Telegram Desktop wrote its result.json (the program tells it since 1.0.106), else the date in
+ * its folder's name (ChatExport_2026-11-20), else null — the newest message's date (parseExport).
+ */
+export function exportTime(mtime: string | null | undefined, folder: string): string | null {
+  const t = typeof mtime === 'string' ? Date.parse(mtime) : NaN;
+  // A real time: not in the future (a clock off by a day), not before Telegram exported JSON at all (2018).
+  if (Number.isFinite(t) && t <= Date.now() + 86_400_000 && t >= Date.UTC(2018, 0, 1)) return new Date(t).toISOString();
+  return folderDate(folder);
 }
 
 /** Reading an export the person picked: in the background, the screen follows it (importState). */
@@ -386,7 +400,9 @@ export class TelegramService {
         job.stage = 'cancelled';
         return;
       }
-      const targets = job.folder ? await this.exportsIn(files, first) : [{ file: first, folder: null, name: win32.basename(win32.dirname(first)) }];
+      const targets = job.folder
+        ? await this.exportsIn(files, first)
+        : [{ file: first, folder: null, name: win32.basename(win32.dirname(first)), mtime: files.stat ? ((await files.stat(first).catch(() => null))?.mtime ?? null) : null }];
       if (!targets.length) throw new UserError(NO_RESULT);
       job.stage = 'reading';
       job.files = targets.length;
@@ -396,7 +412,7 @@ export class TelegramService {
         job.name = t.name;
         try {
           const text = await this.readText(files, t.file, job);
-          read.push(parseExport(text, folderDate(t.folder ?? win32.dirname(t.file)), { folder: t.folder }));
+          read.push(parseExport(text, exportTime(t.mtime, t.folder ?? win32.dirname(t.file)), { folder: t.folder }));
         } catch (e) {
           if (targets.length === 1 || this.job !== job) throw e;
           job.skipped.push({ name: t.name, error: errText(e) });
@@ -421,7 +437,7 @@ export class TelegramService {
   }
 
   /** The exports in a folder the person gave: its own result.json, or those of its folders one level down (ChatExport_… each). */
-  private async exportsIn(files: PartFiles, folder: string): Promise<Array<{ file: string; folder: string; name: string }>> {
+  private async exportsIn(files: PartFiles, folder: string): Promise<Array<{ file: string; folder: string; name: string; mtime: string | null }>> {
     const listAll = async (dir: string, pages: number) => {
       const items: Awaited<ReturnType<PartFiles['list']>>['items'] = [];
       let after: string | undefined;
@@ -436,11 +452,11 @@ export class TelegramService {
     const isResult = (i: { name: string; dir: boolean }) => !i.dir && i.name.toLowerCase() === 'result.json';
     const top = await listAll(folder, 10);
     const here = top.find(isResult);
-    if (here) return [{ file: here.path, folder, name: win32.basename(folder) }];
-    const out: Array<{ file: string; folder: string; name: string }> = [];
+    if (here) return [{ file: here.path, folder, name: win32.basename(folder), mtime: here.mtime ?? null }];
+    const out: Array<{ file: string; folder: string; name: string; mtime: string | null }> = [];
     for (const d of top.filter((i) => i.dir).slice(0, MAX_SUBFOLDERS)) {
       const r = (await listAll(d.path, 3).catch(() => [])).find(isResult);
-      if (r) out.push({ file: r.path, folder: d.path, name: d.name });
+      if (r) out.push({ file: r.path, folder: d.path, name: d.name, mtime: r.mtime ?? null });
       if (out.length >= MAX_EXPORTS) break;
     }
     return out;
