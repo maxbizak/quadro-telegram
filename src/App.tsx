@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Check, ExternalLink, FileArchive, FolderOpen, History, KeyRound, LogOut, Megaphone, MessageCircle, RefreshCw, Search, ShieldCheck, Trash2, Upload, User, Users } from 'lucide-react';
+import { Bot, Check, ClipboardList, Copy, ExternalLink, FileArchive, FolderOpen, History, KeyRound, LogOut, Megaphone, MessageCircle, RefreshCw, Search, ShieldCheck, Trash2, Upload, User, Users } from 'lucide-react';
 import qrcode from 'qrcode-generator';
 import { errorText, quadro, usePcEvents, useQuadro } from './quadro';
 
@@ -39,9 +39,9 @@ type ImportJob = {
   error: string | null;
 };
 type FileAccess = { read: boolean; folder: boolean };
-type Read = { at: string; tool: string; chats: string[]; messages: number; files: number; bytes: number; query?: string; error?: string };
+type Read = { at: string; tool: string; chats: string[]; messages: number; files: number; bytes: number; query?: string; rows?: number; error?: string };
 type Login = { step: 'code' | 'qr' | 'password' | 'done' | 'error'; viaApp?: boolean; hint?: string; wrong?: boolean; url?: string; expiresMs?: number; message?: string };
-type Tab = 'access' | 'journal' | 'export' | 'account';
+type Tab = 'access' | 'works' | 'journal' | 'export' | 'account';
 
 const pc = <T,>(method: string, params?: unknown) => quadro.pc.call<T>(method, params);
 const KIND: Record<Kind, { label: string; icon: typeof User }> = {
@@ -50,7 +50,7 @@ const KIND: Record<Kind, { label: string; icon: typeof User }> = {
   group: { label: 'Группа', icon: Users },
   channel: { label: 'Канал', icon: Megaphone },
 };
-const TOOL: Record<string, string> = { chats: 'Список чатов', messages: 'Читал сообщения', search: 'Искал', file: 'Открыл файл' };
+const TOOL: Record<string, string> = { chats: 'Список чатов', messages: 'Читал сообщения', search: 'Искал', file: 'Открыл файл', works_note: 'Записал в учёт работ', works: 'Смотрел учёт работ' };
 const when = (iso?: string) => (iso ? new Date(iso).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 const kb = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} КБ` : `${(n / 1048576).toFixed(1)} МБ`);
 const day = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString('ru', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
@@ -477,6 +477,7 @@ function Workspace({ status, onChanged, onOwnKeys, onLogin }: { status: Status; 
   const [journalSeen, setJournalSeen] = useState<Read[] | null>(null);
   const tabs: Array<readonly [Tab, string]> = [
     ['access', 'Доступ для ИИ'],
+    ['works', 'Работы'],
     ['journal', 'Что читал ИИ'],
     ['export', 'Выгрузка'],
   ];
@@ -508,6 +509,7 @@ function Workspace({ status, onChanged, onOwnKeys, onLogin }: { status: Status; 
         ))}
       </div>
       {tab === 'access' && <Access onChanged={onChanged} />}
+      {tab === 'works' && <Works />}
       {tab === 'journal' && <Journal initial={journalSeen} onLoaded={setJournalSeen} />}
       {tab === 'export' && <Exports onChanged={onChanged} onAccess={() => setTab('access')} />}
       {tab === 'account' && live && <Account status={status} onChanged={onChanged} onOwnKeys={onOwnKeys} />}
@@ -659,7 +661,7 @@ function Journal({ initial, onLoaded }: { initial: Read[] | null; onLoaded: (r: 
                     {r.chats.length ? ` — ${r.chats.map((c) => `«${c}»`).join(', ')}` : ''}
                   </div>
                   <div className="q-subtle">
-                    {r.error ? <span className="tg-error">Отказ: {r.error}</span> : [r.messages ? `${r.messages} сообщ.` : '', r.files ? `${r.files} файл` : '', r.bytes ? kb(r.bytes) : ''].filter(Boolean).join(' · ')}
+                    {r.error ? <span className="tg-error">Отказ: {r.error}</span> : [r.messages ? `${r.messages} сообщ.` : '', r.rows ? `строк: ${r.rows}` : '', r.files ? `${r.files} файл` : '', r.bytes ? kb(r.bytes) : ''].filter(Boolean).join(' · ')}
                   </div>
                 </div>
               </li>
@@ -670,6 +672,186 @@ function Journal({ initial, onLoaded }: { initial: Read[] | null; onLoaded: (r: 
               Очистить журнал
             </button>
           </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+type WorkStatus = 'unpaid' | 'paid' | 'not_work' | 'unknown' | 'removed';
+type WorkRow = {
+  key: string;
+  chat: string;
+  chatId: string;
+  message: number;
+  date: string | null;
+  who: string;
+  what: string;
+  amount: string | null;
+  status: WorkStatus;
+  by: 'ai' | 'person';
+  ai: WorkStatus;
+  evidence: number[];
+  note: string | null;
+  link: string | null;
+  exact: boolean;
+  exportedAt?: string;
+};
+type WorksList = { rows: WorkRow[]; totals: Array<{ who: string; line: string }>; counts: { open: number; unpaid: number; paid: number; all: number; removed: number }; canSeal: boolean };
+type WorksFilter = 'open' | 'paid' | 'all' | 'removed';
+
+const WORK_STATUS: Record<WorkStatus, string> = { unpaid: 'Не оплачено', paid: 'Оплачено', not_work: 'Не работа', unknown: 'Неясно', removed: 'Убрано' };
+const MARKS: Array<readonly [Exclude<WorkStatus, 'removed'> | 'removed', string]> = [
+  ['paid', 'Оплачено'],
+  ['unpaid', 'Не оплачено'],
+  ['not_work', 'Не работа'],
+  ['removed', 'Убрать'],
+];
+
+/**
+ * «Работы»: the ledger the AI keeps from the allowed chats (telegram_works_note) and the person's marks — a person's mark always
+ * wins, and the AI's later notes never change it. The marks are the screen's own methods: the AI cannot call them.
+ */
+function Works() {
+  const [filter, setFilter] = useState<WorksFilter>('open');
+  const [data, setData] = useState<WorksList | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const load = useCallback(async (f: WorksFilter) => {
+    try {
+      setData(await pc<WorksList>('worksList', { filter: f }));
+      setError('');
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }, []);
+  useEffect(() => {
+    void load(filter);
+  }, [filter, load]);
+  // The AI wrote to the ledger while the screen is open: show it at once.
+  const onEvent = useCallback(
+    (name: string, d: unknown) => {
+      if (name === 'read' && (d as Read | null)?.tool === 'works_note') void load(filter);
+    },
+    [filter, load],
+  );
+  usePcEvents(onEvent);
+  const mark = async (row: WorkRow, status: WorkStatus | 'clear') => {
+    setBusy(row.key);
+    try {
+      await pc('worksMark', { key: row.key, status });
+      await load(filter);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const copy = async () => {
+    try {
+      const { text } = await pc<{ text: string }>('worksText');
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopied('');
+      } catch {
+        // A frame without the clipboard: the text to select and copy by hand.
+        setCopied(text);
+      }
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const chips: Array<readonly [WorksFilter, string, number]> = data
+    ? [
+        ['open', 'Неоплаченные и неясные', data.counts.open],
+        ['paid', 'Оплаченные', data.counts.paid],
+        ['all', 'Все', data.counts.all],
+        ['removed', 'Убранные', data.counts.removed],
+      ]
+    : [];
+  return (
+    <section className="q-stack">
+      <p className="q-muted">
+        Сюда ИИ записывает проверенные выводы о работах из разрешённых чатов: что за работа, кто, сумма, оплачено ли. «Оплачено» и «не оплачено» он ставит только со ссылкой на сообщения. Ваши отметки важнее — ИИ их не меняет. Учёт хранится только на этом ПК.
+      </p>
+      {error && <p className="tg-error">{error}</p>}
+      {!data ? (
+        <p className="q-muted">Загружаю…</p>
+      ) : data.counts.all + data.counts.removed === 0 ? (
+        <div className="q-card tg-center">
+          <ClipboardList size={24} className="q-muted" />
+          <h2>ИИ ещё ничего не записал</h2>
+          <p className="q-muted">Попросите ИИ: «Найди в Telegram неоплаченные работы и запиши их в учёт».</p>
+        </div>
+      ) : (
+        <>
+          {data.totals.length > 0 && (
+            <div className="q-card tg-totals">
+              <h2>Не оплачено по людям</h2>
+              <ul>
+                {data.totals.map((t) => (
+                  <li key={t.who}>{t.line}</li>
+                ))}
+              </ul>
+              <div className="q-row">
+                <button type="button" className="q-btn" onClick={() => void copy()}>
+                  <Copy size={14} /> Скопировать неоплаченное
+                </button>
+                {copied === '' && <span className="q-subtle">Скопировано</span>}
+              </div>
+              {copied && <textarea className="q-input tg-copy" readOnly value={copied} rows={8} aria-label="Неоплаченные работы" onFocus={(e) => e.currentTarget.select()} />}
+            </div>
+          )}
+          <div className="tg-filters" role="group" aria-label="Показать">
+            {chips.map(([id, label, n]) => (
+              <button key={id} type="button" className="tg-chip" aria-pressed={filter === id} onClick={() => setFilter(id)}>
+                {label} <b>{n}</b>
+              </button>
+            ))}
+          </div>
+          {data.rows.length === 0 ? (
+            <p className="q-muted">Таких работ нет.</p>
+          ) : (
+            <ul className="q-list">
+              {data.rows.map((r) => (
+                <li key={r.key} className="tg-work">
+                  <div className="tg-grow">
+                    <div className="q-subtle">
+                      {r.date ? when(r.date) : ''} · «{r.chat}» · #{r.message}
+                      {r.exportedAt ? ` · по выгрузке от ${day(r.exportedAt)}` : ''}
+                    </div>
+                    <div>
+                      <b>{r.who || 'без имени'}</b> — {r.what}
+                      {r.amount ? <span className="tg-amount"> · {r.amount}</span> : null}
+                    </div>
+                    {r.note && <div className="q-subtle">{r.note}</div>}
+                    <div className="q-subtle">
+                      <span className={`tg-status tg-status-${r.status}`}>{WORK_STATUS[r.status]}</span>{' '}
+                      {r.by === 'person' ? `· отметили вы (ИИ решил: ${WORK_STATUS[r.ai].toLowerCase()})` : `· решил ИИ${r.evidence.length ? `, доказательства #${r.evidence.join(', #')}` : ', без доказательств'}`}
+                    </div>
+                    <div className="q-row tg-marks">
+                      {MARKS.filter(([s]) => s !== r.status).map(([s, label]) => (
+                        <button key={s} type="button" className="q-btn tg-small" disabled={busy === r.key} onClick={() => void mark(r, s)}>
+                          {label}
+                        </button>
+                      ))}
+                      {r.by === 'person' && (
+                        <button type="button" className="q-btn tg-small" disabled={busy === r.key} onClick={() => void mark(r, 'clear')}>
+                          Как решил ИИ
+                        </button>
+                      )}
+                      {r.link && (
+                        <button type="button" className="q-btn tg-small" onClick={() => void quadro.ui.openExternal(r.link!)}>
+                          <ExternalLink size={13} /> {r.exact ? 'Открыть в Telegram' : 'Открыть чат'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       )}
     </section>

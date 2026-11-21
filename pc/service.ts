@@ -2,7 +2,25 @@ import { extname, win32 } from 'node:path';
 import type { AllowedChat, JournalEntry, Store } from './store';
 import { EXPORT_MAX_CHARS, ExportError, ExportReader, exportDate, folderDate, mergeExports, parseExport, type ExportChat, type ExportFileReader } from './export';
 import type { Downloaded, LoginState, Me, PeerRef, TgApi, TgChat, TgFactory, TgMessage } from './types';
-import { worksData } from './works';
+import { messageLink, WORKS_JSON_MAX, worksData } from './works';
+import {
+  allowedStatus,
+  decidedBy,
+  LEDGER,
+  matches,
+  readNote,
+  STATUS_WORD,
+  statusOf,
+  totalLine,
+  totalsOf,
+  trimLedger,
+  unpaidText,
+  WORK_STATUSES,
+  type LedgerFilter,
+  type LedgerRow,
+  type PersonMark,
+  type WorkStatus,
+} from './ledger';
 import { docxText } from './zip-text';
 
 // «Telegram»'s part on the PC: the person signs in on its screen; the AI reads only the chats the person allowed, page by page,
@@ -216,6 +234,8 @@ export class TelegramService {
   private job: ImportJob | null = null;
   /** What the program lets the part do with picked files (asked once). */
   private fileRights: Promise<{ read: boolean; folder: boolean }> | null = null;
+  /** «Учёт работ», read once from the sealed file. */
+  private worksCache: LedgerRow[] | null = null;
 
   constructor(private readonly d: ServiceDeps) {}
 
@@ -1024,4 +1044,241 @@ export class TelegramService {
     const path = this.d.store.saveFile(safe, f.bytes);
     return done({ text: `${about}. Содержимое как текст не прочитать — файл сохранён на ПК владельца: ${path}`, data: { path, mime: f.mime, size: f.bytes.length } });
   }
+
+  // ——— «Учёт работ» (1.5.0): the AI writes its conclusions (telegram_works_note), the person marks rows on the screen ———
+
+  private async ledger(): Promise<LedgerRow[]> {
+    this.worksCache ??= await this.d.store.works();
+    return this.worksCache;
+  }
+
+  private async saveLedger(rows: LedgerRow[]): Promise<void> {
+    const kept = trimLedger(rows);
+    await this.d.store.saveWorks(kept);
+    this.worksCache = kept;
+  }
+
+  /** The rows the AI may see: of the chats allowed now (a chat closed again hides its rows from the AI; the person still sees them). */
+  private async aiRows(): Promise<LedgerRow[]> {
+    const allowed = new Set(this.d.store.allowed().map((a) => a.id));
+    return (await this.ledger()).filter((r) => allowed.has(r.chatId));
+  }
+
+  /**
+   * The AI's conclusions about works, one row per work message: the chat must be allowed and the message there; the evidence
+   * (messages of the chat) is checked too. «paid» / «unpaid» without evidence become «unknown»; a row the person marked never changes.
+   */
+  async aiWorksNote(x: unknown, signal?: AbortSignal): Promise<McpAnswer> {
+    return this.aiCall('works_note', async () => {
+      if (!this.d.store.canSeal) throw new UserError('Программа Quadro Hub не умеет защищать учёт работ: обновите программу');
+      const items = obj(x).items;
+      if (!Array.isArray(items) || !items.length) throw new UserError(`items — работы, от 1 до ${LEDGER.perCall}`);
+      if (items.length > LEDGER.perCall) throw new UserError(`За один вызов — до ${LEDGER.perCall} работ, остальное — следующим вызовом`);
+      const rows = [...(await this.ledger())];
+      const at = new Map(rows.map((r, i) => [r.key, i]));
+      const refused: string[] = [];
+      const kept: string[] = [];
+      const downgraded: number[] = [];
+      const dropped: number[] = [];
+      let added = 0;
+      let updated = 0;
+      let lookups = 0;
+      const noted = new Date(this.now()).toISOString();
+      for (const raw of items) {
+        if (signal?.aborted) throw new UserError('ИИ отменил вызов', 'ABORTED');
+        const n = readNote(raw);
+        if (typeof n === 'string') {
+          refused.push(n);
+          continue;
+        }
+        let chat: AllowedChat;
+        try {
+          chat = this.allowedChat(n.chat);
+        } catch (e) {
+          refused.push(`#${n.message}: ${errText(e)}`);
+          continue;
+        }
+        const key = `${chat.id}:${n.message}`;
+        const i = at.get(key);
+        const old = i === undefined ? null : rows[i]!;
+        if (old?.person) {
+          kept.push(`#${n.message} в «${chat.title}» — человек отметил «${STATUS_WORD[old.person.status]}», не меняю`);
+          continue;
+        }
+        if (lookups + 1 + n.evidence.length > LEDGER.lookups) {
+          refused.push(`#${n.message}: за один вызов проверяю до ${LEDGER.lookups} сообщений — пришлите остальное следующим вызовом`);
+          continue;
+        }
+        lookups += 1 + n.evidence.length;
+        const reader = await this.readerFor(chat);
+        const m = await reader.message(chat.peer, n.message);
+        if (!m) {
+          refused.push(`#${n.message}: такого сообщения нет в чате «${chat.title}»`);
+          continue;
+        }
+        const evidence: number[] = [];
+        for (const id of n.evidence) {
+          if (id === n.message || (await reader.message(chat.peer, id))) evidence.push(id);
+          else dropped.push(id);
+        }
+        const { status, downgraded: down } = allowedStatus({ status: n.status, evidence });
+        if (down) downgraded.push(n.message);
+        const link = messageLink(chat, n.message);
+        const exportedAt = chat.source === 'export' ? (await this.loadedExports()).reader.chat(chat.id)?.exportedAt : undefined;
+        const row: LedgerRow = {
+          key,
+          chatId: chat.id,
+          chat: chat.title,
+          message: n.message,
+          date: m.date,
+          who: n.who || m.from?.name || '',
+          what: n.what,
+          amount: n.amount,
+          ai: { status, evidence, note: n.note, at: noted },
+          person: null,
+          link: link?.url ?? null,
+          exact: link?.exact ?? false,
+          ...(exportedAt ? { exportedAt } : {}),
+        };
+        if (old) {
+          rows[i!] = row;
+          updated++;
+        } else {
+          at.set(key, rows.length);
+          rows.push(row);
+          added++;
+        }
+      }
+      if (added || updated) await this.saveLedger(rows);
+      const lines = [`Учёт работ: записал ${added}, обновил ${updated}${refused.length ? `, отказ ${refused.length}` : ''}${kept.length ? `, не тронул ${kept.length}` : ''}.`];
+      if (downgraded.length) lines.push(`Без доказательств — «неизвестно», а не «оплачено» / «не оплачено»: ${downgraded.map((id) => `#${id}`).join(', ')}. Укажите в evidence сообщения, которые это показывают.`);
+      if (dropped.length) lines.push(`Таких сообщений-доказательств в чате нет, не записал их: ${dropped.map((id) => `#${id}`).join(', ')}.`);
+      if (kept.length) lines.push('Отметки человека важнее:', ...kept.map((k) => `- ${k}`));
+      if (refused.length) lines.push('Отказ:', ...refused.map((r) => `- ${r}`));
+      const open = (await this.aiRows()).filter((r) => matches(r, 'open'));
+      lines.push('', `Сейчас в учёте неоплаченных и неизвестных: ${open.length}. Весь список — telegram_works.`);
+      const written = added + updated;
+      return {
+        answer: { text: lines.join('\n'), data: this.ledgerData(open, 'open'), ...(written ? { notice: `ИИ записал в учёт работ: ${written}` } : {}) },
+        entry: { chats: [], messages: 0, files: 0, rows: written },
+      };
+    });
+  }
+
+  /** The ledger for the AI: the allowed chats' rows, by default those still to settle, with the unpaid sums by person. */
+  async aiWorks(x: unknown): Promise<McpAnswer> {
+    return this.aiCall('works', async () => {
+      const { answer, shown } = this.worksAnswer(x, await this.aiRows());
+      return { answer, entry: { chats: [], messages: 0, files: 0, rows: shown } };
+    });
+  }
+
+  /** The same ledger asked by the person on the screen «Работы и оплата» in Hub (quadro.tools.call('works')): all rows, no journal. */
+  async personWorks(x: unknown): Promise<McpAnswer> {
+    const { answer } = this.worksAnswer(x, await this.ledger());
+    return { text: answer.text, data: answer.data };
+  }
+
+  private worksAnswer(x: unknown, all: LedgerRow[]): { answer: McpAnswer; shown: number } {
+    const p = obj(x);
+    const filter = readFilter(p.status, 'open');
+    const chat = String(p.chat ?? '').trim().toLowerCase().replace(/^@/, '');
+    const who = String(p.who ?? '').trim().toLowerCase();
+    const rows = all
+      .filter((r) => matches(r, filter))
+      .filter((r) => !chat || r.chatId === chat || r.chat.toLowerCase() === chat)
+      .filter((r) => !who || r.who.toLowerCase().includes(who))
+      .sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+    const shown = rows.slice(0, LEDGER.shown);
+    const what = { open: 'неоплаченные и неизвестные', all: 'все', unpaid: 'не оплаченные', paid: 'оплаченные', not_work: '«не работа»', unknown: 'неизвестные' }[filter];
+    if (!all.length) {
+      return { answer: { text: 'В учёте работ пока пусто. Найдите работы telegram_search, проверьте переписку и запишите выводы telegram_works_note.', data: this.ledgerData([], filter) }, shown: 0 };
+    }
+    const totals = totalsOf(rows);
+    const lines = [`Учёт работ (${what}): ${rows.length}${rows.length > shown.length ? `, показаны ${shown.length} новых` : ''}.`];
+    if (totals.length) lines.push('', 'Не оплачено по людям:', ...totals.map((t) => `- ${totalLine(t)}`));
+    if (shown.length) lines.push('', 'Работы (новые первыми):', ...shown.map((r) => `- ${rowLine(r)}`));
+    else lines.push('', 'Таких работ нет.');
+    return { answer: { text: lines.join('\n'), data: this.ledgerData(shown, filter) }, shown: shown.length };
+  }
+
+  /** structuredContent for the screen «Работы и оплата»: the rows (under 32 KB) and the unpaid sums by person. */
+  private ledgerData(rows: LedgerRow[], filter: LedgerFilter | 'removed') {
+    const totals = totalsOf(rows).map((t) => ({ who: t.who, line: totalLine(t) }));
+    const data = { kind: 'ledger' as const, filter, count: rows.length, shown: 0, totals, rows: [] as Array<ReturnType<typeof screenRow>> };
+    let size = JSON.stringify(data).length;
+    for (const r of rows) {
+      const row = screenRow(r);
+      const add = JSON.stringify(row).length + 1;
+      if (size + add > WORKS_JSON_MAX) break;
+      data.rows.push(row);
+      size += add;
+    }
+    data.shown = data.rows.length;
+    return data;
+  }
+
+  /** The screen's «Работы» tab: every row (or the removed ones), newest first, and the unpaid sums by person. */
+  async worksList(x: unknown) {
+    const filter = obj(x).filter === 'removed' ? 'removed' : readFilter(obj(x).filter, 'all');
+    const rows = await this.ledger();
+    const list = rows.filter((r) => (filter === 'removed' ? statusOf(r) === 'removed' : matches(r, filter))).sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+    const count = (f: LedgerFilter) => rows.filter((r) => matches(r, f)).length;
+    return {
+      rows: list.map(screenRow),
+      totals: totalsOf(rows).map((t) => ({ who: t.who, line: totalLine(t) })),
+      counts: { open: count('open'), unpaid: count('unpaid'), paid: count('paid'), all: count('all'), removed: rows.filter((r) => statusOf(r) === 'removed').length },
+      canSeal: this.d.store.canSeal,
+    };
+  }
+
+  /** The person's mark on a row (the screen only; the AI has no such tool): a status, «removed», or «clear» — back to the AI's. */
+  async worksMark(x: unknown) {
+    const key = String(obj(x).key ?? '');
+    const raw = obj(x).status;
+    const status = raw === 'clear' ? 'clear' : raw === 'removed' || WORK_STATUSES.includes(raw as WorkStatus) ? (raw as PersonMark) : null;
+    if (!status) throw new UserError('Отметка — unpaid, paid, not_work, unknown, removed или clear');
+    const rows = [...(await this.ledger())];
+    const i = rows.findIndex((r) => r.key === key);
+    if (i < 0) throw new UserError('Этой работы уже нет в учёте', 'NOT_FOUND');
+    rows[i] = { ...rows[i]!, person: status === 'clear' ? null : { status, at: new Date(this.now()).toISOString() } };
+    await this.saveLedger(rows);
+    return { row: screenRow(rows[i]!) };
+  }
+
+  /** «Скопировать неоплаченное»: the unpaid works and their totals as text the person sends. */
+  async worksText() {
+    return { text: unpaidText(await this.ledger(), (iso) => exportDate(iso)) };
+  }
+}
+
+const FILTERS: readonly LedgerFilter[] = ['open', 'all', 'unpaid', 'paid', 'not_work', 'unknown'];
+const readFilter = (v: unknown, fallback: LedgerFilter): LedgerFilter => (FILTERS.includes(v as LedgerFilter) ? (v as LedgerFilter) : fallback);
+
+/** A row as the screens draw it. */
+function screenRow(r: LedgerRow) {
+  return {
+    key: r.key,
+    chat: r.chat,
+    chatId: r.chatId,
+    message: r.message,
+    date: r.date,
+    who: r.who,
+    what: r.what,
+    amount: r.amount,
+    status: statusOf(r),
+    by: decidedBy(r),
+    ai: r.ai.status,
+    evidence: r.ai.evidence,
+    note: r.ai.note,
+    link: r.link,
+    exact: r.exact,
+    ...(r.exportedAt ? { exportedAt: r.exportedAt } : {}),
+  };
+}
+
+/** «#412 · «UGC команда» · 18.11.2026 · Аня · 3 шапки — 1 500 ₽ — не оплачено (решил ИИ; доказательства #415)». */
+function rowLine(r: LedgerRow): string {
+  const why = r.person ? 'отметил человек' : `решил ИИ${r.ai.evidence.length ? `; доказательства ${r.ai.evidence.map((id) => `#${id}`).join(', ')}` : '; без доказательств'}`;
+  return `#${r.message} · «${r.chat}» (chat=${r.chatId}) · ${r.date ? exportDate(r.date) : 'дата?'} · ${r.who || 'без имени'} · ${r.what}${r.amount ? ` — ${r.amount}` : ''} — ${STATUS_WORD[statusOf(r)]} (${why})${r.ai.note ? ` · ${r.ai.note}` : ''}`;
 }

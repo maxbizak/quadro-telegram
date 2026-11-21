@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExportChat } from './export';
+import type { LedgerRow } from './ledger';
 import type { ChatKind, PeerRef } from './types';
 
 // What the part keeps, all in its own data folder on the PC (pc.files.own) — nothing goes to Hub's server:
@@ -9,6 +10,7 @@ import type { ChatKind, PeerRef } from './types';
 //   journal.json what the AI read: when, which tool, which chats, how many messages and bytes — never the content
 //   files/       attachments the AI asked for that are not pictures or text (to read on this PC), the newest 100
 //   exports.bin  chats of Telegram Desktop's exports the person loaded (no sign-in needed), sealed by Windows like the session
+//   works.bin    «Учёт работ»: the works the AI noted (who, what, the sum, paid or not) and the person's marks, sealed the same way
 
 export interface Sealer {
   seal(data: Uint8Array | string): Promise<Uint8Array>;
@@ -44,6 +46,8 @@ export interface JournalEntry {
   bytes: number;
   /** What the AI searched for (its own words, not the chats' content). */
   query?: string;
+  /** Rows of «Учёт работ» the AI wrote or read — how many only, never sums or names. */
+  rows?: number;
   error?: string;
 }
 
@@ -111,7 +115,26 @@ export class Store {
       rmSync(this.path('access.json'), { force: true });
       rmSync(this.path('journal.json'), { force: true });
       rmSync(this.path('exports.bin'), { force: true });
+      rmSync(this.path('works.bin'), { force: true });
     }
+  }
+
+  /** «Учёт работ» (sealed); none — nothing noted yet, another Windows user's file, or no sealing. */
+  async works(): Promise<LedgerRow[]> {
+    if (!this.sealer || !existsSync(this.path('works.bin'))) return [];
+    try {
+      const raw = Buffer.from(await this.sealer.unseal(new Uint8Array(readFileSync(this.path('works.bin'))))).toString('utf8');
+      const list = (JSON.parse(raw) as { rows?: LedgerRow[] }).rows;
+      return Array.isArray(list) ? list : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async saveWorks(rows: LedgerRow[]): Promise<void> {
+    if (!rows.length) return void rmSync(this.path('works.bin'), { force: true });
+    if (!this.sealer) throw new Error('Программа Quadro Hub не умеет защищать учёт работ: обновите программу');
+    this.writeFile('works.bin', await this.sealer.seal(JSON.stringify({ rows })));
   }
 
   /** The loaded exports' chats (sealed); none — nothing loaded, another Windows user's file, or no sealing. */

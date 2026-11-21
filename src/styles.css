@@ -400,3 +400,89 @@
 .tg-progress progress::-webkit-progress-value {
   background: var(--color-brand);
 }
+
+/* «Работы»: the ledger the AI keeps and the person's marks (theme tokens only). */
+.tg-totals h2 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.tg-totals ul {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tg-copy {
+  width: 100%;
+  margin-top: 8px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.tg-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tg-chip {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tg-chip:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-foreground);
+}
+
+.tg-chip[aria-pressed='true'] {
+  border-color: var(--color-brand);
+  background: var(--color-brand-soft);
+  color: var(--color-brand-text);
+}
+
+.tg-chip b {
+  margin-left: 4px;
+  font-weight: 600;
+}
+
+.tg-work {
+  display: flex;
+  gap: 12px;
+}
+
+.tg-amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.tg-status {
+  font-weight: 500;
+}
+
+.tg-status-unpaid {
+  color: var(--color-destructive-text);
+}
+
+.tg-status-paid {
+  color: var(--color-success);
+}
+
+.tg-marks {
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.tg-small {
+  padding: 4px 9px;
+  font-size: 12px;
+}

@@ -10,9 +10,9 @@ import type { TgFactory } from './types';
 // chooses chats (host.rpc.handle — only its screen calls these); the AI reads through Hub's MCP (host.mcp.handle — only the AI
 // calls these, and they never sign in, never see the phone, code or password, and read only the allowed chats).
 
-export const SCREEN_METHODS = ['status', 'setKeys', 'useQuadroKeys', 'sendCode', 'signIn', 'password', 'qrStart', 'qrCancel', 'logout', 'chats', 'setAccess', 'access', 'journal', 'clearJournal', 'search', 'importPick', 'importState', 'importStart', 'importChunk', 'importEnd', 'exportsList', 'removeExport'] as const;
+export const SCREEN_METHODS = ['status', 'setKeys', 'useQuadroKeys', 'sendCode', 'signIn', 'password', 'qrStart', 'qrCancel', 'logout', 'chats', 'setAccess', 'access', 'journal', 'clearJournal', 'search', 'importPick', 'importState', 'importStart', 'importChunk', 'importEnd', 'exportsList', 'removeExport', 'works', 'worksList', 'worksMark', 'worksText'] as const;
 /** The AI's tools: manifest `mcp.tools[].handler` = `pc:<name>`. */
-export const AI_TOOLS = ['chats', 'messages', 'search', 'file'] as const;
+export const AI_TOOLS = ['chats', 'messages', 'search', 'file', 'worksNote', 'works'] as const;
 
 export { publisherKeysOf };
 
@@ -74,11 +74,19 @@ export function serveTelegram(host: Host, factory?: TgFactory, sealer: Host['sec
   host.rpc.handle('importEnd', (x) => service.importEnd(x));
   host.rpc.handle('exportsList', () => service.exportsList());
   host.rpc.handle('removeExport', (x) => service.removeExport(x));
+  // «Учёт работ»: the person's side — the list, their marks (a person's mark always wins over the AI's) and the text to copy.
+  // There is no screen method to write the AI's conclusions: only the AI writes them (worksNote below), only the person marks.
+  host.rpc.handle('works', (x) => service.personWorks(x));
+  host.rpc.handle('worksList', (x) => service.worksList(x));
+  host.rpc.handle('worksMark', (x) => service.worksMark(x));
+  host.rpc.handle('worksText', () => service.worksText());
   if (host.mcp) {
     host.mcp.handle('chats', () => service.aiChats());
     host.mcp.handle('messages', (x, ctx) => service.aiMessages(x, ctx?.signal));
     host.mcp.handle('search', (x, ctx) => service.aiSearch(x, ctx?.signal));
     host.mcp.handle('file', (x, ctx) => service.aiFile(x, ctx?.signal));
+    host.mcp.handle('worksNote', (x, ctx) => service.aiWorksNote(x, ctx?.signal));
+    host.mcp.handle('works', (x) => service.aiWorks(x));
   }
   host.lifecycle.onStop(() => service.stop());
   return service;

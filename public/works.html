@@ -6,7 +6,8 @@
     <title>Работы и оплата</title>
     <!-- The screen of telegram_search (surface «mcp-app», kernel §12е): one file — in an AI's chat Hub puts the bridge in itself,
          in Hub these two come from Hub. Its data: quadro.context.tool / the event «tool.result» (structuredContent), or
-         quadro.tools.call('search') when the person searches here. -->
+         quadro.tools.call('search') when the person searches here. Since 1.5.0 it also draws «Учёт работ» (telegram_works and
+         telegram_works_note: structuredContent.kind = 'ledger') — the AI's conclusions and the person's marks, read-only here. -->
     <link rel="stylesheet" href="/pkg-sdk/v1/quadro-ui.css" />
     <script src="/pkg-sdk/v1/quadro.js"></script>
     <style>
@@ -46,6 +47,13 @@
       .open:disabled { opacity: 0.55; cursor: default; }
       .foot { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-top: 10px; }
       .foot .q-subtle { margin: 0; }
+      .totals { border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 10px 12px; margin-bottom: 10px; }
+      .totals h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+      .totals ul { margin: 0; padding-left: 18px; }
+      .totals li { margin: 2px 0; font-variant-numeric: tabular-nums; }
+      .by { display: block; color: var(--color-subtle); font-size: 12px; margin-top: 4px; }
+      .by.person { color: var(--color-brand-text); }
+      .badge.mute { color: var(--color-subtle); text-decoration: line-through; }
       [hidden] { display: none !important; }
       /* A narrow chat: each message as a card. */
       @media (max-width: 720px) {
@@ -73,15 +81,17 @@
         <option value="">Все разрешённые чаты</option>
       </select>
       <button class="q-btn q-btn-primary" id="go" type="submit">Найти</button>
+      <button class="q-btn" id="book" type="button" title="Что ИИ уже проверил и записал, и ваши отметки">Учёт работ</button>
     </form>
     <div class="words" id="words" aria-label="Быстрый поиск"></div>
 
+    <div class="totals" id="totals" hidden></div>
     <div class="filters" id="filters" role="group" aria-label="Показать" hidden></div>
     <div class="state" id="state">Скажите ИИ, что найти, или ищите здесь: например, «оплат» или «скинул».</div>
     <div class="table" id="table" role="table" aria-label="Сообщения о работе и оплате" hidden></div>
 
     <div class="foot" id="foot" hidden>
-      <p class="q-subtle">«Оплачено?» — по словам сообщения или ответа на него, это подсказка. Откройте сообщение, чтобы проверить.</p>
+      <p class="q-subtle" id="hint">«Оплачено?» — по словам сообщения или ответа на него, это подсказка. Откройте сообщение, чтобы проверить.</p>
       <button class="q-btn" id="ask" type="button" hidden>Попросить ИИ проверить неоплаченные</button>
     </div>
 
@@ -97,6 +107,16 @@
           ['unknown', 'Неясно'],
         ];
         var st = { data: null, filter: 'all', busy: false, chatsAsked: false, inChat: false };
+        var SEARCH_HINT = '«Оплачено?» — по словам сообщения или ответа на него, это подсказка. Откройте сообщение, чтобы проверить.';
+        var LEDGER_HINT = 'Строки записал ИИ по переписке; «оплачено» и «не оплачено» — только со ссылкой на сообщения. Ваши отметки — в приложении Telegram → «Работы», они важнее.';
+        var STATUS = { unpaid: ['no', 'Не оплачено'], paid: ['yes', 'Оплачено'], unknown: ['unknown', 'Неясно'], not_work: ['mute', 'Не работа'], removed: ['mute', 'Убрано'] };
+        var LEDGER_FILTERS = [
+          ['all', 'Все'],
+          ['unpaid', 'Не оплачено'],
+          ['paid', 'Оплачено'],
+          ['unknown', 'Неясно'],
+          ['not_work', 'Не работа'],
+        ];
         var $ = function (id) {
           return document.getElementById(id);
         };
@@ -123,6 +143,9 @@
         function isWorks(d) {
           return !!d && typeof d === 'object' && Array.isArray(d.items);
         }
+        function isLedger(d) {
+          return !!d && typeof d === 'object' && d.kind === 'ledger' && Array.isArray(d.rows);
+        }
         function textOf(result) {
           return ((result && result.content) || [])
             .filter(function (c) {
@@ -142,6 +165,7 @@
           if (text) {
             $('table').hidden = true;
             $('filters').hidden = true;
+            $('totals').hidden = true;
             $('foot').hidden = true;
           }
         }
@@ -236,9 +260,117 @@
           return r;
         }
 
+        /** A row of «Учёт работ»: the work, its sum, its status — and who decided it (the AI with its evidence, or the person). */
+        function ledgerRow(w) {
+          var r = el('div', 'row');
+          r.setAttribute('role', 'row');
+          var chat = el('div', 'cell c-chat');
+          chat.appendChild(el('span', 'chat', w.chat));
+          chat.appendChild(el('span', 'sub', (w.date ? when(w.date) + ' · ' : '') + '#' + w.message));
+          if (w.exportedAt) chat.appendChild(el('span', 'sub', 'по выгрузке от ' + exportDay(w.exportedAt)));
+          var who = el('div', 'cell c-who', w.who || '—');
+          var text = el('div', 'cell c-text');
+          text.appendChild(el('span', 'text', w.what));
+          if (w.note) text.appendChild(el('span', 'sub', w.note));
+          var amount = el('div', 'cell c-amount');
+          amount.appendChild(w.amount ? el('span', 'amount', w.amount) : el('span', 'none', '—'));
+          var paid = el('div', 'cell c-paid');
+          var s = STATUS[w.status] || STATUS.unknown;
+          paid.appendChild(el('span', 'badge ' + s[0], s[1]));
+          var by =
+            w.by === 'person'
+              ? el('span', 'by person', 'отметили вы')
+              : el('span', 'by', 'решил ИИ' + (w.evidence && w.evidence.length ? ' · #' + w.evidence.join(', #') : ' · без доказательств'));
+          paid.appendChild(by);
+          var cell = el('div', 'cell c-open');
+          var b = el('button', 'q-btn open', w.link ? (w.exact ? 'Открыть в Telegram' : 'Открыть чат') : 'Нет ссылки');
+          b.type = 'button';
+          if (!w.link) {
+            b.disabled = true;
+            b.title = 'Telegram не даёт ссылок на сообщения этого чата — найдите его по дате и номеру #' + w.message;
+          }
+          b.addEventListener('click', function () {
+            open(w);
+          });
+          cell.appendChild(b);
+          [chat, who, text, amount, paid, cell].forEach(function (c) {
+            c.setAttribute('role', 'cell');
+            r.appendChild(c);
+          });
+          return r;
+        }
+
+        function renderLedger() {
+          var d = st.data;
+          var rows = d.rows.slice();
+          var count = { all: rows.length, unpaid: 0, paid: 0, unknown: 0, not_work: 0 };
+          rows.forEach(function (w) {
+            if (count[w.status] !== undefined) count[w.status]++;
+          });
+          var sub = 'Учёт работ · ' + d.count;
+          if (d.shown < d.count) sub += ' · показаны ' + d.shown + ' (остальные ИИ видит текстом)';
+          $('sub').textContent = sub;
+          if (!rows.length) {
+            setState(d.count ? 'Таких работ в учёте нет.' : 'В учёте пока пусто: попросите ИИ найти неоплаченные работы и записать выводы.');
+            return;
+          }
+          setState('');
+          var tot = $('totals');
+          tot.textContent = '';
+          if (d.totals && d.totals.length) {
+            tot.appendChild(el('h2', null, 'Не оплачено по людям'));
+            var ul = el('ul');
+            d.totals.forEach(function (t) {
+              ul.appendChild(el('li', null, t.line));
+            });
+            tot.appendChild(ul);
+            tot.hidden = false;
+          } else tot.hidden = true;
+          if (st.filter !== 'all' && !count[st.filter]) st.filter = 'all';
+          var f = $('filters');
+          f.textContent = '';
+          f.hidden = false;
+          LEDGER_FILTERS.forEach(function (x) {
+            if (x[0] !== 'all' && !count[x[0]]) return;
+            var c = el('button', 'chip', x[1]);
+            c.type = 'button';
+            c.appendChild(el('b', null, count[x[0]]));
+            c.setAttribute('aria-pressed', String(st.filter === x[0]));
+            c.addEventListener('click', function () {
+              st.filter = x[0];
+              render();
+            });
+            f.appendChild(c);
+          });
+          var t = $('table');
+          t.textContent = '';
+          var th = el('div', 'row th');
+          th.setAttribute('role', 'row');
+          ['Чат', 'Кто', 'Что за работа', 'Сумма', 'Статус', ''].forEach(function (h) {
+            var c = el('div', 'cell', h);
+            c.setAttribute('role', 'columnheader');
+            th.appendChild(c);
+          });
+          t.appendChild(th);
+          rows
+            .filter(function (w) {
+              return st.filter === 'all' || w.status === st.filter;
+            })
+            .forEach(function (w) {
+              t.appendChild(ledgerRow(w));
+            });
+          t.hidden = false;
+          $('hint').textContent = LEDGER_HINT;
+          $('foot').hidden = false;
+          $('ask').hidden = true;
+        }
+
         function render() {
           var d = st.data;
+          if (isLedger(d)) return renderLedger();
           if (!isWorks(d)) return;
+          $('totals').hidden = true;
+          $('hint').textContent = SEARCH_HINT;
           // An answer «оплатил» that marked a found work is shown in that work's row («ответ #…»), not as a row of its own.
           var answers = {};
           d.items.forEach(function (w) {
@@ -310,9 +442,30 @@
         }
 
         function show(data) {
+          if (!st.data || isLedger(st.data) !== isLedger(data)) st.filter = 'all';
           st.data = data;
           if (data && data.query) $('q').value = data.query;
           render();
+        }
+
+        /** In Hub: the person opens the ledger (quadro.tools.call('works') — the part's own method, not the AI). */
+        function book() {
+          if (st.busy) return;
+          st.busy = true;
+          setState('Открываю учёт работ…');
+          quadro.tools
+            .call('works', { status: 'all' })
+            .then(function (r) {
+              var d = r && r.structuredContent;
+              if (isLedger(d)) show(d);
+              else setState(textOf(r) || 'Учёт ответил без таблицы', true);
+            })
+            .catch(function (e) {
+              setState(explain(e), true);
+            })
+            .then(function () {
+              st.busy = false;
+            });
         }
 
         function search(query, chat) {
@@ -341,7 +494,7 @@
 
         function explain(e) {
           var code = e && e.code;
-          if (code === 'NOT_IN_PROGRAM') return 'Поиск по Telegram работает в программе Quadro Hub на ПК, где вы вошли в Telegram.';
+          if (code === 'NOT_IN_PROGRAM') return 'Telegram работает в программе Quadro Hub на ПК, где вы вошли в Telegram или загрузили выгрузку.';
           return (e && e.message) || 'Не получилось';
         }
 
@@ -402,16 +555,18 @@
         $('chat').addEventListener('focus', askChats);
         $('chat').addEventListener('pointerdown', askChats);
         $('ask').addEventListener('click', askAi);
+        $('book').addEventListener('click', book);
 
         quadro.on('tool.input', function (e) {
           var a = e && e.arguments;
           if (a && a.query) $('q').value = a.query;
-          if (!st.data) setState('ИИ ищет' + (a && a.query ? ' «' + a.query + '»' : '') + '…');
+          if (a && Array.isArray(a.items)) setState('ИИ записывает в учёт работ: ' + a.items.length + '…');
+          else if (!st.data) setState(a && a.query ? 'ИИ ищет «' + a.query + '»…' : 'ИИ открывает учёт работ…');
         });
         quadro.on('tool.result', function (r) {
           var d = r && r.structuredContent;
-          if (isWorks(d)) show(d);
-          else if (r && r.isError) setState(textOf(r) || 'Поиск не удался', true);
+          if (isWorks(d) || isLedger(d)) show(d);
+          else if (r && r.isError) setState(textOf(r) || 'Не удалось', true);
         });
         quadro.on('tool.cancelled', function () {
           if (!st.data) setState('ИИ отменил поиск.');
@@ -422,7 +577,9 @@
           var t = ctx && ctx.tool;
           var a = t && t.input;
           if (a && a.query) $('q').value = a.query;
-          if (t && t.result && isWorks(t.result.structuredContent)) show(t.result.structuredContent);
+          // In an AI's chat the ledger is the AI's to change: the person marks rows in the app (its «Работы» tab), not here.
+          $('book').hidden = st.inChat;
+          if (t && t.result && (isWorks(t.result.structuredContent) || isLedger(t.result.structuredContent))) show(t.result.structuredContent);
           else if (!st.inChat && ctx && ctx.pc === false) setState('Поиск по Telegram работает в программе Quadro Hub на ПК, где вы вошли в Telegram.');
         });
       })();
