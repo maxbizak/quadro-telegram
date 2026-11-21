@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -9,8 +10,15 @@ import { defineConfig, type Plugin } from 'vite';
 
 const here = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 
+/** The package's icon (kernel.md §12н): `icon` a path of an SVG or PNG in the package — copied to dist/ at the same path. */
+function copyIcon(m: { icon?: unknown }): void {
+  if (typeof m.icon !== 'string' || !/\.(svg|png)$/i.test(m.icon)) return;
+  mkdirSync(dirname(here(`./dist/${m.icon}`)), { recursive: true });
+  copyFileSync(here(`./${m.icon}`), here(`./dist/${m.icon}`));
+}
+
 /**
- * dist/manifest.json next to dist/client/: the folder is the whole package. QHAPP_MCP=0 — without the AI's tools (`mcp` and the
+ * dist/manifest.json next to dist/client/ (and the icon): the folder is the whole package. QHAPP_MCP=0 — without the AI's tools (`mcp` and the
  * right pc.mcp), for a Hub whose manifest schema does not take them yet («Ядро 2», claude/v2-package-mcp).
  */
 function manifest(): Plugin {
@@ -18,7 +26,8 @@ function manifest(): Plugin {
     name: 'qhapp-manifest',
     closeBundle() {
       mkdirSync(here('./dist'), { recursive: true });
-      const m = JSON.parse(readFileSync(here('./manifest.json'), 'utf8')) as { mcp?: unknown; permissions?: string[] };
+      const m = JSON.parse(readFileSync(here('./manifest.json'), 'utf8')) as { mcp?: unknown; permissions?: string[]; icon?: unknown };
+      copyIcon(m);
       if (process.env.QHAPP_MCP === '0') {
         delete m.mcp;
         m.permissions = (m.permissions ?? []).filter((p) => p !== 'pc.mcp');
